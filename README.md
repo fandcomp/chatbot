@@ -1,6 +1,6 @@
 # Self-Service Regulatory Knowledge Assistant
 
-An AI regulatory assistant that gives verified, traceable answers — directly linked to the source document, its structure (chapter/article/clause/letter), and page — built on an **Adaptive Structure-Aware Contextual Hybrid RAG** pipeline.
+An AI regulatory assistant that gives verified, traceable answers — directly linked to the source document, its structure, and page — built on an **Adaptive Structure-Aware Contextual Hybrid RAG** pipeline. Structure is generic-first: chapter/article/clause/letter (BAB/Pasal/Ayat/Huruf) is one specialized grammar among several a document region can use, not an assumed universal shape (see [`ADR-014`](docs/adr/ADR-014-region-based-generic-structure.md)).
 
 Full architecture, product definition, and engineering rules live in [`docs/MASTER_DEVELOPMENT_SPEC.md`](docs/MASTER_DEVELOPMENT_SPEC.md) — that document is the source of truth for this project, extended by [`docs/ADDENDUM_ADAPTIVE_MIXED_STRUCTURE_DOCUMENTS.md`](docs/ADDENDUM_ADAPTIVE_MIXED_STRUCTURE_DOCUMENTS.md) (mixed-structure document handling — relevant from M3/M4 onward). Architecture decisions are recorded in [`docs/adr/`](docs/adr/).
 
@@ -43,11 +43,11 @@ Per `docs/MASTER_DEVELOPMENT_SPEC.md` §98:
 
 | Milestone | Target | Status |
 |---|---|---|
-| M0 | Foundation (monorepo, Next.js, FastAPI, Postgres, Redis, Qdrant, MinIO, Docker Compose, config, logging, health checks, test foundation) | In Progress |
+| M0 | Foundation (monorepo, Next.js, FastAPI, Postgres, Redis, Qdrant, MinIO, Docker Compose, config, logging, health checks, test foundation) | Done |
 | M1 | Authentication + Multi-Tenant | Not Started |
 | M2 | Document Upload + Storage | Not Started |
-| M3 | Generic Document Parsing | Not Started |
-| M4 | Regulatory Structure | Not Started |
+| M3 | Generic Document Parsing — region-based, see [`ADR-014`](docs/adr/ADR-014-region-based-generic-structure.md) | Not Started |
+| M4 | Regulatory Structure — region-based, see [`ADR-014`](docs/adr/ADR-014-region-based-generic-structure.md) | Not Started |
 | M5 | Hierarchical Chunking | Not Started |
 | M6 | Indexing | Not Started |
 | M7 | Retrieval | Not Started |

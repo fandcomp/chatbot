@@ -12,7 +12,7 @@
 
 ## Project Overview
 
-Self-Service Regulatory Knowledge Assistant — a multi-tenant chatbot platform that turns client-uploaded regulatory documents (of unknown, varying structure) into a verified, traceable knowledge base, using an **Adaptive Structure-Aware Contextual Hybrid RAG** pipeline. Stack: Next.js + TypeScript (frontend), FastAPI + Python (backend), PostgreSQL + Qdrant + Redis + Celery + S3/MinIO, Voyage embeddings/reranking, GPT-OSS 20B/120B via Groq through a Hugging Face gateway. Full detail: [`docs/MASTER_DEVELOPMENT_SPEC.md`](docs/MASTER_DEVELOPMENT_SPEC.md) — treat it as the architectural source of truth; read it before making non-trivial changes.
+Self-Service Regulatory Knowledge Assistant — a multi-tenant chatbot platform that turns client-uploaded regulatory documents (of unknown, varying structure) into a verified, traceable knowledge base, using an **Adaptive Structure-Aware Contextual Hybrid RAG** pipeline. Stack: Next.js + TypeScript (frontend), FastAPI + Python (backend), PostgreSQL + Qdrant + Redis + Celery + S3/MinIO, Voyage embeddings/reranking, GPT-OSS 20B/120B via Groq through a Hugging Face gateway. Full detail: [`docs/MASTER_DEVELOPMENT_SPEC.md`](docs/MASTER_DEVELOPMENT_SPEC.md) — treat it as the architectural source of truth; read it before making non-trivial changes. It is extended by [`docs/ADDENDUM_ADAPTIVE_MIXED_STRUCTURE_DOCUMENTS.md`](docs/ADDENDUM_ADAPTIVE_MIXED_STRUCTURE_DOCUMENTS.md) (see [`ADR-014`](docs/adr/ADR-014-region-based-generic-structure.md)) — required reading before M3/M4/M5/M6/M7/M10 work.
 
 ## Critical Rules
 
@@ -27,6 +27,15 @@ Self-Service Regulatory Knowledge Assistant — a multi-tenant chatbot platform 
 - OCR/VLM every page without reason, or rerank every query unconditionally.
 - Rewrite every query with an LLM, or send full chat history to the model.
 - Mix context across chats, hardcode API keys, or hardcode a provider inside business logic.
+
+### Do Not — Structure (addendum §40, ADR-014)
+
+- Assume every regulation has `Pasal`, or convert a numbered section into a `Pasal`.
+- Assume one PDF has a single structural grammar — detect per `StructuralRegion`, not per file.
+- Discard visual appendices (org charts, flowcharts, diagrams), or fail a scanned PDF just because text extraction is empty.
+- Flatten deeply nested lists or force a fixed hierarchy depth.
+- Show an empty `Pasal: -` field, or cite a summary as if it were original evidence.
+- Treat a table of contents as authoritative content (it's a hint only), or ignore embedded templates inside appendices.
 
 ### Operating Rules (spec §107)
 
@@ -64,6 +73,10 @@ tests/              Cross-app e2e / RAG evaluation (backend unit/integration
 Never `Question → LLM Knowledge → Answer → find citation afterward`.
 
 **Gateway pattern** (spec §35-37) — business logic never imports a provider SDK directly. All LLM calls go through `LLMGateway`, all embedding calls through `EmbeddingGateway`, all reranking through `RerankerGateway`. Provider/model selection is configuration, not code.
+
+**Generic-structure-first parsing** (addendum §2, ADR-014) — always:
+`Layout → Generic Structure → Structural Region Classification → Specialized Interpretation → Canonical Hierarchical Tree`.
+Never `PDF → find BAB → find Pasal → fail if Pasal absent`. `Pasal`/`Ayat`/`Huruf` are specialized, optional node types on top of a generic tree — not the schema's backbone. Citations use the source's own terminology via a generic `structural_path` (e.g. `"BAB III, angka 11 huruf a, halaman 7"`), never a fabricated `Pasal` number.
 
 ## Environment Variables
 
