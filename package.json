@@ -1,0 +1,16 @@
+{
+  "name": "chatbot",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-Service Regulatory Knowledge Assistant — monorepo root",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev:web": "pnpm --filter web dev",
+    "build:web": "pnpm --filter web build",
+    "test:web": "pnpm --filter web test",
+    "lint:web": "pnpm --filter web lint"
+  }
+}

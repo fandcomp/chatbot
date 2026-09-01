@@ -1,0 +1,49 @@
+{
+  "includeCoAuthoredBy": false,
+  "permissions": {
+    "allow": [
+      "Bash(pnpm run *)",
+      "Bash(pnpm --filter *)",
+      "Bash(pnpm dlx next *)",
+      "Bash(pnpm dlx eslint *)",
+      "Bash(pnpm dlx prettier *)",
+      "Bash(pnpm dlx vitest *)",
+      "Bash(pnpm dlx shadcn *)",
+      "Bash(pnpm test)",
+      "Bash(pnpm install)",
+      "Bash(npm run *)",
+      "Bash(npm test)",
+      "Bash(npx tsc *)",
+      "Bash(npx eslint *)",
+      "Bash(npx prettier *)",
+      "Bash(npx next *)",
+      "Bash(npx vitest *)",
+      "Bash(npx jest *)",
+      "Bash(uv run *)",
+      "Bash(uv add *)",
+      "Bash(uv sync)",
+      "Bash(uv init *)",
+      "Bash(uv pip *)",
+      "Bash(alembic *)",
+      "Bash(pytest *)",
+      "Bash(ruff *)",
+      "Bash(mypy *)",
+      "Bash(black *)",
+      "Bash(docker compose *)",
+      "Bash(docker ps)",
+      "Bash(docker logs *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ],
+    "deny": [
+      "Bash(npm publish)",
+      "Bash(pnpm publish)",
+      "Bash(pip install --user *)",
+      "Bash(docker compose down -v)",
+      "Bash(git push --force*)"
+    ]
+  }
+}
