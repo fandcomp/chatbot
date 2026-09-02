@@ -8,6 +8,9 @@ from app.auth.router import limiter
 from app.auth.router import router as auth_router
 from app.core.config import settings
 from app.core.logging import configure_logging
+from app.documents.router import router as documents_router
+from app.ingestion.router import router as ingestion_router
+from app.knowledge.router import router as knowledge_router
 from app.organizations.router import router as organizations_router
 
 
@@ -33,6 +36,9 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(organizations_router)
+    app.include_router(knowledge_router)
+    app.include_router(documents_router)
+    app.include_router(ingestion_router)
 
     return app
 

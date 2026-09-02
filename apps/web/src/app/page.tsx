@@ -30,6 +30,9 @@ function AuthStatus() {
   return (
     <p className="text-sm text-zinc-600 dark:text-zinc-400">
       Signed in as {state.user.email} ({state.role}).{" "}
+      <Link href="/documents" className="text-primary underline-offset-4 hover:underline">
+        Documents
+      </Link>{" "}
       <button
         type="button"
         onClick={() => void logout()}

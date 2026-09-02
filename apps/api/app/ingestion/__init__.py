@@ -1,1 +1,2 @@
-"""Adaptive document ingestion pipeline orchestration. Implemented in M3 (see docs/MASTER_DEVELOPMENT_SPEC.md $11-13)."""
+"""Ingestion: document upload endpoint, upload validation, and ProcessingJob
+model/queue-status endpoint (see docs/MASTER_DEVELOPMENT_SPEC.md §56, §59-60)."""

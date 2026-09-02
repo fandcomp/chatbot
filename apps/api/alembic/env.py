@@ -14,6 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.audit.models import AuditLog  # noqa: F401
 from app.core.config import settings
 from app.core.database import Base
+from app.documents.models import Document, DocumentVersion  # noqa: F401
+from app.ingestion.models import ProcessingJob  # noqa: F401
+from app.knowledge.models import KnowledgeSpace  # noqa: F401
 from app.organizations.models import Organization, OrganizationMember  # noqa: F401
 from app.users.models import User  # noqa: F401
 

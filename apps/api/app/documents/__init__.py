@@ -1,1 +1,2 @@
-"""Document upload, storage, and lifecycle domain module. Implemented in M2 (see docs/MASTER_DEVELOPMENT_SPEC.md $9-10, $56-58)."""
+"""Documents: Document/DocumentVersion models and read/delete endpoints
+(see docs/MASTER_DEVELOPMENT_SPEC.md §9, §19, §51, §55-57)."""

@@ -25,7 +25,8 @@ async def _clean_database() -> AsyncGenerator[None, None]:
     async with engine.begin() as conn:
         await conn.execute(
             text(
-                "TRUNCATE TABLE audit_logs, organization_members, users, organizations "
+                "TRUNCATE TABLE audit_logs, processing_jobs, document_versions, documents, "
+                "knowledge_spaces, organization_members, users, organizations "
                 "RESTART IDENTITY CASCADE"
             )
         )

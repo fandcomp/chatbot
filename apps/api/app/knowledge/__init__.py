@@ -1,1 +1,3 @@
-"""Knowledge space grouping and knowledge base versioning domain module. Implemented starting M2, extended in M13 (see docs/MASTER_DEVELOPMENT_SPEC.md $8, $58)."""
+"""Knowledge spaces: KnowledgeSpace model and CRUD endpoints used to group
+documents within an organization (see docs/MASTER_DEVELOPMENT_SPEC.md §8, §51,
+docs/adr/ADR-016)."""

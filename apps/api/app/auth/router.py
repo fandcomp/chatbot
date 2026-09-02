@@ -18,6 +18,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
+from app.knowledge.models import KnowledgeSpace
 from app.organizations.models import Organization, OrganizationMember, OrgRole
 from app.users.models import User
 
@@ -87,6 +88,13 @@ async def register(
         role=OrgRole.OWNER,
     )
     db.add(membership)
+    await db.flush()
+
+    # Every organization needs at least one KnowledgeSpace for documents to
+    # belong to (§51 ERD); auto-create a default so uploads work immediately
+    # without an extra manual setup step (ADR-016).
+    default_space = KnowledgeSpace(organization_id=organization.id, name="General")
+    db.add(default_space)
     await db.flush()
 
     await log_action(
