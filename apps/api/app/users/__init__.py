@@ -1,1 +1,2 @@
-"""User management domain module. Implemented in M1 (see docs/MASTER_DEVELOPMENT_SPEC.md $52)."""
+"""User management: the User model shared by auth and organizations
+(see docs/MASTER_DEVELOPMENT_SPEC.md $52)."""

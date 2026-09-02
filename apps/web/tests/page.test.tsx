@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import Home from "@/app/page";
+import { AuthProvider } from "@/lib/auth-context";
 
 describe("Home page", () => {
   beforeEach(() => {
@@ -23,7 +24,11 @@ describe("Home page", () => {
 
   it("renders the product heading", () => {
     // Arrange & Act
-    render(<Home />);
+    render(
+      <AuthProvider>
+        <Home />
+      </AuthProvider>
+    );
 
     // Assert
     expect(

@@ -1,4 +1,45 @@
+"use client";
+
+import Link from "next/link";
+
 import { BackendStatus } from "@/components/BackendStatus";
+import { useAuth } from "@/lib/auth-context";
+
+function AuthStatus() {
+  const { state, logout } = useAuth();
+
+  if (state.status === "loading") {
+    return <p className="text-sm text-zinc-500 dark:text-zinc-400">Checking session…</p>;
+  }
+
+  if (state.status === "unauthenticated") {
+    return (
+      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+        <Link href="/login" className="text-primary underline-offset-4 hover:underline">
+          Sign in
+        </Link>{" "}
+        or{" "}
+        <Link href="/register" className="text-primary underline-offset-4 hover:underline">
+          register your organization
+        </Link>
+        .
+      </p>
+    );
+  }
+
+  return (
+    <p className="text-sm text-zinc-600 dark:text-zinc-400">
+      Signed in as {state.user.email} ({state.role}).{" "}
+      <button
+        type="button"
+        onClick={() => void logout()}
+        className="text-primary underline-offset-4 hover:underline"
+      >
+        Sign out
+      </button>
+    </p>
+  );
+}
 
 export default function Home() {
   return (
@@ -11,6 +52,7 @@ export default function Home() {
           AI regulatory assistant that gives verified answers, traceable
           directly to the source document, its structure, and page.
         </p>
+        <AuthStatus />
         <div className="w-full">
           <BackendStatus />
         </div>

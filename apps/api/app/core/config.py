@@ -66,9 +66,19 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     CORS_ORIGINS: str = "http://localhost:3000"
 
+    # AUTH (added) — JWT session cookie, see ADR-015
+    JWT_SECRET_KEY: str
+    JWT_ALGORITHM: str = "HS256"
+    JWT_EXPIRE_MINUTES: int = 720
+    SESSION_COOKIE_NAME: str = "session"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def session_cookie_secure(self) -> bool:
+        return self.ENVIRONMENT != "development"
 
 
 settings = Settings()

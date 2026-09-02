@@ -11,7 +11,11 @@ from alembic import context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.audit.models import AuditLog  # noqa: F401
 from app.core.config import settings
+from app.core.database import Base
+from app.organizations.models import Organization, OrganizationMember  # noqa: F401
+from app.users.models import User  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -26,8 +30,9 @@ if config.config_file_name is not None:
 # so there is a single source of truth for connection config.
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
-# No ORM models exist yet (M0 scope) — real metadata arrives in M1+.
-target_metadata = None
+# Model modules are imported above so they register on Base.metadata before
+# autogenerate/upgrade runs.
+target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

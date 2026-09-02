@@ -1,1 +1,2 @@
-"""Organization and membership domain module. Implemented in M1 (see docs/MASTER_DEVELOPMENT_SPEC.md $7, $52)."""
+"""Organizations and membership: Organization/OrganizationMember models, RBAC roles,
+member management endpoints (see docs/MASTER_DEVELOPMENT_SPEC.md $7, $51, $52)."""
