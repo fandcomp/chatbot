@@ -4,6 +4,7 @@
 
 import asyncio
 import hashlib
+import uuid
 from datetime import UTC, datetime
 
 from botocore.exceptions import (
@@ -15,13 +16,16 @@ from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import bindparam, insert, select, update
 
 from app.celery_app import celery_app
+from app.core.config import settings
 from app.database import (
     async_session_factory,
     document_nodes,
     document_regions,
+    document_structure_profiles,
     document_versions,
     processing_jobs,
 )
+from app.interpretation.pipeline import interpret_document
 from app.parsing.pipeline import run_pipeline
 from app.storage import get_object_bytes
 
@@ -272,10 +276,13 @@ async def _parse_document_async(job_id: str, attempts: int) -> None:
                         next_id_updates,
                     )
 
+            # Job stays PROCESSING (not SUCCEEDED) — chained into
+            # interpret_structure under the same job row below, same pattern
+            # verify_upload -> parse_document already established.
             await session.execute(
                 update(processing_jobs)
                 .where(processing_jobs.c.id == job_id)
-                .values(status="SUCCEEDED", updated_at=now)
+                .values(status="PROCESSING", updated_at=now)
             )
             await session.execute(
                 update(document_versions)
@@ -288,6 +295,9 @@ async def _parse_document_async(job_id: str, attempts: int) -> None:
             # never leave the job stuck at PROCESSING forever with no error.
             await session.rollback()
             await _fail(f"Persisting parsed structure failed: {exc}")
+            return
+
+    interpret_structure.delay(job_id)
 
 
 @celery_app.task(
@@ -313,3 +323,153 @@ async def _parse_document_async(job_id: str, attempts: int) -> None:
 )
 def parse_document(self, job_id: str) -> None:
     asyncio.run(_parse_document_async(job_id, attempts=self.request.retries + 1))
+
+
+def _node_update_row(node, now: datetime) -> dict:
+    return {
+        "node_id": node.id,
+        "node_type": node.node_type,
+        "semantic_role": node.semantic_role,
+        "label": node.label,
+        "structural_path_json": node.structural_path_json,
+        "structural_path_text": node.structural_path_text,
+        "structural_depth": node.structural_depth,
+        "chapter_number": node.chapter_number,
+        "article_number": node.article_number,
+        "clause_number": node.clause_number,
+        "letter_number": node.letter_number,
+        "appendix_number": node.appendix_number,
+        "confidence": node.confidence,
+        "updated_at": now,
+    }
+
+
+async def _interpret_structure_async(job_id: str, attempts: int) -> None:
+    async with async_session_factory() as session:
+        job_row = (
+            await session.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
+        ).mappings().one()
+        organization_id = job_row["organization_id"]
+        version_id = job_row["document_version_id"]
+
+        await session.execute(
+            update(processing_jobs)
+            .where(processing_jobs.c.id == job_id)
+            .values(status="PROCESSING", attempts=attempts, updated_at=datetime.now(UTC))
+        )
+        await session.commit()
+
+        version_row = (
+            await session.execute(
+                select(document_versions).where(document_versions.c.id == version_id)
+            )
+        ).mappings().one()
+
+        async def _fail(message: str) -> None:
+            await session.execute(
+                update(processing_jobs)
+                .where(processing_jobs.c.id == job_id)
+                .values(status="FAILED", error_message=message, updated_at=datetime.now(UTC))
+            )
+            await session.execute(
+                update(document_versions)
+                .where(document_versions.c.id == version_id)
+                .values(status="PROCESSING_FAILED", updated_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+        region_rows = (
+            await session.execute(
+                select(document_regions).where(
+                    document_regions.c.document_version_id == version_id
+                )
+            )
+        ).mappings().all()
+        node_rows = (
+            await session.execute(
+                select(document_nodes).where(document_nodes.c.document_version_id == version_id)
+            )
+        ).mappings().all()
+
+        try:
+            result = interpret_document(
+                [dict(row) for row in node_rows], [dict(row) for row in region_rows]
+            )
+        except Exception as exc:  # noqa: BLE001 - a malformed/unexpected node
+            # shape must resolve the job to FAILED, not strand it at
+            # PROCESSING forever.
+            await _fail(f"Structure interpretation failed: {exc}")
+            return
+
+        # M3's own OCR-fallback REVIEW_REQUIRED must never be silently
+        # upgraded by M4's structural confidence — the text itself is
+        # already suspect regardless of how confidently it was re-typed.
+        if version_row["status"] == "REVIEW_REQUIRED":
+            final_status = "REVIEW_REQUIRED"
+        elif result.aggregate_confidence >= settings.STRUCTURE_HIGH_CONFIDENCE:
+            final_status = "APPROVED"
+        else:
+            final_status = "REVIEW_REQUIRED"
+
+        now = datetime.now(UTC)
+        try:
+            node_updates = [_node_update_row(node, now) for node in result.nodes]
+            if node_updates:
+                await session.execute(
+                    update(document_nodes)
+                    .where(document_nodes.c.id == bindparam("node_id"))
+                    .values(
+                        node_type=bindparam("node_type"),
+                        semantic_role=bindparam("semantic_role"),
+                        label=bindparam("label"),
+                        structural_path_json=bindparam("structural_path_json"),
+                        structural_path_text=bindparam("structural_path_text"),
+                        structural_depth=bindparam("structural_depth"),
+                        chapter_number=bindparam("chapter_number"),
+                        article_number=bindparam("article_number"),
+                        clause_number=bindparam("clause_number"),
+                        letter_number=bindparam("letter_number"),
+                        appendix_number=bindparam("appendix_number"),
+                        confidence=bindparam("confidence"),
+                        updated_at=bindparam("updated_at"),
+                    ),
+                    node_updates,
+                )
+
+            await session.execute(
+                insert(document_structure_profiles).values(
+                    id=uuid.uuid4(),
+                    organization_id=organization_id,
+                    document_version_id=version_id,
+                    created_at=now,
+                    updated_at=now,
+                    **result.profile,
+                )
+            )
+
+            await session.execute(
+                update(processing_jobs)
+                .where(processing_jobs.c.id == job_id)
+                .values(status="SUCCEEDED", updated_at=now)
+            )
+            await session.execute(
+                update(document_versions)
+                .where(document_versions.c.id == version_id)
+                .values(status=final_status, updated_at=now)
+            )
+            await session.commit()
+        except Exception as exc:  # noqa: BLE001 - a persistence failure here
+            # must never leave the job stuck at PROCESSING forever either.
+            await session.rollback()
+            await _fail(f"Persisting structural interpretation failed: {exc}")
+
+
+@celery_app.task(
+    bind=True,
+    name="document_worker.interpret_structure",
+    autoretry_for=(OSError, TimeoutError),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 5},
+)
+def interpret_structure(self, job_id: str) -> None:
+    asyncio.run(_interpret_structure_async(job_id, attempts=self.request.retries + 1))

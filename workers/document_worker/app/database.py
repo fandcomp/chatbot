@@ -14,7 +14,7 @@ split.
 
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import Column, DateTime, Integer, MetaData, Numeric, String, Table, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, Numeric, String, Table, Text
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -152,6 +152,38 @@ _numbering_style = ENUM(
     name="numbering_style",
     create_type=False,
 )
+# M4: SpecializedStructureInterpreter is the first writer of semantic_role.
+_semantic_role = ENUM(
+    "GENERAL",
+    "PURPOSE",
+    "OBJECTIVE",
+    "SCOPE",
+    "LEGAL_BASIS",
+    "DEFINITION",
+    "POSITION",
+    "PRINCIPLE",
+    "PLANNING",
+    "PREPARATION",
+    "EXECUTION",
+    "TERMINATION",
+    "PROCEDURE",
+    "REQUIREMENT",
+    "RESPONSIBILITY",
+    "AUTHORITY",
+    "DUTY",
+    "PROHIBITION",
+    "COMMAND",
+    "CONTROL",
+    "DECISION",
+    "VALIDITY",
+    "ORGANIZATION_STRUCTURE",
+    "PROCESS_FLOW",
+    "CONCLUSION",
+    "RECOMMENDATION",
+    "UNKNOWN",
+    name="semantic_role",
+    create_type=False,
+)
 
 document_regions = Table(
     "document_regions",
@@ -179,8 +211,7 @@ document_nodes = Table(
     Column("previous_id", UUID(as_uuid=True)),
     Column("next_id", UUID(as_uuid=True)),
     Column("node_type", _document_node_type),
-    # semantic_role intentionally omitted — unused (NULL) until M4, no reason
-    # for this worker to write it.
+    Column("semantic_role", _semantic_role),
     Column("label", String(255)),
     Column("title", String(1024)),
     Column("number_raw", String(64)),
@@ -196,7 +227,32 @@ document_nodes = Table(
     Column("confidence", Numeric(4, 3)),
     Column("source_provenance", JSONB),
     Column("structural_path_json", JSONB),
+    Column("structural_path_text", Text),
     Column("structural_depth", Integer),
+    Column("visual_source_type", String(64)),
+    Column("chapter_number", String(64)),
+    Column("article_number", String(64)),
+    Column("clause_number", String(64)),
+    Column("letter_number", String(64)),
+    Column("appendix_number", String(64)),
+    Column("created_at", DateTime(timezone=True)),
+    Column("updated_at", DateTime(timezone=True)),
+)
+
+document_structure_profiles = Table(
+    "document_structure_profiles",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("organization_id", UUID(as_uuid=True)),
+    Column("document_version_id", UUID(as_uuid=True)),
+    Column("contains_articles", Boolean),
+    Column("contains_numbered_sections", Boolean),
+    Column("contains_chapters", Boolean),
+    Column("contains_decision_preamble", Boolean),
+    Column("contains_appendices", Boolean),
+    Column("contains_tables", Boolean),
+    Column("contains_diagrams", Boolean),
+    Column("contains_embedded_document", Boolean),
     Column("created_at", DateTime(timezone=True)),
     Column("updated_at", DateTime(timezone=True)),
 )

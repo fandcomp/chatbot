@@ -176,6 +176,43 @@ class DocumentRegion(Base):
     )
 
 
+class DocumentStructureProfile(Base):
+    """One row per document_version (addendum §15) — a coarse summary of
+    which structural grammars M4's interpreter found, used by the review UI
+    and later milestones' retrieval routing (§24) without re-walking the
+    whole node tree.
+    """
+
+    __tablename__ = "document_structure_profiles"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+    )
+    document_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("document_versions.id"), nullable=False, unique=True
+    )
+    contains_articles: Mapped[bool] = mapped_column(nullable=False, default=False)
+    contains_numbered_sections: Mapped[bool] = mapped_column(nullable=False, default=False)
+    contains_chapters: Mapped[bool] = mapped_column(nullable=False, default=False)
+    contains_decision_preamble: Mapped[bool] = mapped_column(nullable=False, default=False)
+    contains_appendices: Mapped[bool] = mapped_column(nullable=False, default=False)
+    contains_tables: Mapped[bool] = mapped_column(nullable=False, default=False)
+    contains_diagrams: Mapped[bool] = mapped_column(nullable=False, default=False)
+    contains_embedded_document: Mapped[bool] = mapped_column(nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class DocumentNode(Base):
     """A node in the generic canonical document tree (addendum §5-9).
 
@@ -233,6 +270,7 @@ class DocumentNode(Base):
     confidence: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
     source_provenance: Mapped[dict] = mapped_column(JSONB, nullable=False)
     structural_path_json: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    structural_path_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     structural_depth: Mapped[int] = mapped_column(Integer, nullable=False)
     visual_source_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     chapter_number: Mapped[str | None] = mapped_column(String(64), nullable=True)

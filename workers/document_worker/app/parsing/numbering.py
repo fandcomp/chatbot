@@ -8,9 +8,9 @@ specialized interpretation and must never happen here.
 import re
 from dataclasses import dataclass
 
-_ROMAN_VALUES = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+ROMAN_VALUES = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
 
-_ORDINAL_WORDS = (
+ORDINAL_WORDS = (
     "KESATU",
     "KEDUA",
     "KETIGA",
@@ -32,7 +32,7 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^(\d+)\."), "DECIMAL_DOT"),
     (re.compile(r"^\(([a-z])\)"), "LETTER_PAREN_FULL"),
     (re.compile(r"^([a-z])\)"), "LETTER_PAREN_CLOSE"),
-    (re.compile(r"^(" + "|".join(_ORDINAL_WORDS) + r")\b"), "ORDINAL_WORD"),
+    (re.compile(r"^(" + "|".join(ORDINAL_WORDS) + r")\b"), "ORDINAL_WORD"),
     (re.compile(r"^([IVXLCDM]+)\."), "ROMAN_UPPER_DOT"),
     (re.compile(r"^([ivxlcdm]+)\."), "ROMAN_LOWER_DOT"),
     (re.compile(r"^([A-Z])\."), "LETTER_UPPER_DOT"),
@@ -47,17 +47,24 @@ class NumberingMatch:
     numbering_style: str
 
 
-def _is_valid_roman(token: str) -> bool:
-    upper = token.upper()
-    if not upper or any(ch not in _ROMAN_VALUES for ch in upper):
-        return False
+def roman_to_int(token: str) -> int | None:
+    """Public for reuse by M4's confidence scorer (numbering sequence
+    continuity checks need the actual value, not just validity).
+    """
+    upper = token.strip().upper()
+    if not upper or any(ch not in ROMAN_VALUES for ch in upper):
+        return None
     total = 0
     previous = 0
     for ch in reversed(upper):
-        value = _ROMAN_VALUES[ch]
+        value = ROMAN_VALUES[ch]
         total += -value if value < previous else value
         previous = max(previous, value)
-    return 0 < total < 4000
+    return total if 0 < total < 4000 else None
+
+
+def _is_valid_roman(token: str) -> bool:
+    return roman_to_int(token) is not None
 
 
 def detect_numbering(text: str) -> NumberingMatch | None:

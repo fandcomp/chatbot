@@ -17,7 +17,7 @@ from app.parsing.models import DocumentNode, DocumentRegion
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
-async def _latest_version(db: AsyncSession, document_id: uuid.UUID) -> DocumentVersion:
+async def latest_version(db: AsyncSession, document_id: uuid.UUID) -> DocumentVersion:
     result = await db.execute(
         select(DocumentVersion)
         .where(DocumentVersion.document_id == document_id)
@@ -38,7 +38,7 @@ async def _latest_job_id(db: AsyncSession, document_version_id: uuid.UUID) -> uu
 
 
 async def _to_document_public(db: AsyncSession, document: Document) -> DocumentPublic:
-    version = await _latest_version(db, document.id)
+    version = await latest_version(db, document.id)
     job_id = await _latest_job_id(db, version.id)
     return DocumentPublic(
         id=document.id,
@@ -51,7 +51,7 @@ async def _to_document_public(db: AsyncSession, document: Document) -> DocumentP
     )
 
 
-async def _get_org_scoped_document(
+async def get_org_scoped_document(
     db: AsyncSession, document_id: uuid.UUID, organization_id: uuid.UUID
 ) -> Document:
     result = await db.execute(
@@ -83,7 +83,7 @@ async def get_document(
     membership: OrganizationMember = Depends(get_current_membership),
     db: AsyncSession = Depends(get_db),
 ) -> DocumentPublic:
-    document = await _get_org_scoped_document(db, document_id, membership.organization_id)
+    document = await get_org_scoped_document(db, document_id, membership.organization_id)
     return await _to_document_public(db, document)
 
 
@@ -95,7 +95,7 @@ async def delete_document(
     ),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    document = await _get_org_scoped_document(db, document_id, membership.organization_id)
+    document = await get_org_scoped_document(db, document_id, membership.organization_id)
 
     result = await db.execute(
         select(DocumentVersion).where(DocumentVersion.document_id == document_id)

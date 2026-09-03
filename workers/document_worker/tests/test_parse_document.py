@@ -103,10 +103,15 @@ async def test_parse_document_persists_regions_and_nodes_and_marks_version_parse
     await _seed_version_and_job(seeded, storage_path, content)
 
     try:
-        await _parse_document_async(str(seeded["job_id"]), attempts=1)
+        with patch("app.tasks.interpret_structure.delay") as mock_delay:
+            await _parse_document_async(str(seeded["job_id"]), attempts=1)
 
+        mock_delay.assert_called_once_with(str(seeded["job_id"]))
         job = await _job_row(seeded["job_id"])
-        assert job["status"] == "SUCCEEDED"
+        # The job represents "this version's current async work" end to end —
+        # it stays PROCESSING (not SUCCEEDED) until M4's interpret_structure
+        # resolves it.
+        assert job["status"] == "PROCESSING"
 
         version = await _version_row(seeded["version_id"])
         assert version["status"] in ("PARSED", "REVIEW_REQUIRED")

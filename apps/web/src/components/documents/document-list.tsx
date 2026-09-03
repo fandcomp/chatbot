@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -102,9 +103,20 @@ export function DocumentList({ refreshToken }: Props) {
               {jobStatusOverrides[document.id] ?? document.latest_version_status}
             </p>
           </div>
-          <Button variant="ghost" size="sm" onClick={() => void handleDelete(document.id)}>
-            Delete
-          </Button>
+          <div className="flex items-center gap-2">
+            {document.latest_version_status === "REVIEW_REQUIRED" && (
+              <Button
+                variant="outline"
+                size="sm"
+                render={<Link href={`/documents/${document.id}/structure`} />}
+              >
+                Review structure
+              </Button>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => void handleDelete(document.id)}>
+              Delete
+            </Button>
+          </div>
         </li>
       ))}
     </ul>
