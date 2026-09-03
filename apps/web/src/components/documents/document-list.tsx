@@ -44,9 +44,11 @@ export function DocumentList({ refreshToken }: Props) {
       if (!document.latest_processing_job_id) continue;
       if (resolvedDocumentIds.current.has(document.id)) continue;
 
-      // The document version stays "UPLOADED" until M3 does real parsing
-      // (see M2's scope note) — what actually resolves after upload is the
-      // ProcessingJob, so that's what we poll, not the document status.
+      // We poll the ProcessingJob (not the document) because it's the thing
+      // that resolves after upload; once it reaches a terminal status we
+      // refetch the document list so latest_version_status (PARSED/
+      // REVIEW_REQUIRED/PROCESSING_FAILED) reflects what M3's parser set,
+      // instead of going stale at whatever it was when this poll started.
       const jobId = document.latest_processing_job_id;
       intervals[document.id] = setInterval(async () => {
         try {
@@ -56,6 +58,7 @@ export function DocumentList({ refreshToken }: Props) {
             resolvedDocumentIds.current.add(document.id);
             clearInterval(intervals[document.id]);
             delete intervals[document.id];
+            documentsApi.listDocuments().then(setDocuments).catch(() => undefined);
           }
         } catch {
           resolvedDocumentIds.current.add(document.id);

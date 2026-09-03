@@ -1,4 +1,5 @@
 import hashlib
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import insert, select, text
@@ -72,7 +73,7 @@ async def _version_row(version_id) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_verify_upload_marks_job_succeeded_when_hash_matches(seeded_document_version):
+async def test_verify_upload_chains_into_parse_document_when_hash_matches(seeded_document_version):
     seeded = seeded_document_version
     storage_path = (
         f"organization/{seeded['org_id']}/documents/{seeded['document_id']}/"
@@ -82,10 +83,14 @@ async def test_verify_upload_marks_job_succeeded_when_hash_matches(seeded_docume
     file_hash = hashlib.sha256(_PDF_BYTES).hexdigest()
     await _seed_version_and_job(seeded, file_hash, storage_path)
 
-    await _verify_upload_async(str(seeded["job_id"]), attempts=1)
+    with patch("app.tasks.parse_document.delay") as mock_delay:
+        await _verify_upload_async(str(seeded["job_id"]), attempts=1)
 
+    mock_delay.assert_called_once_with(str(seeded["job_id"]))
     row = await _job_row(seeded["job_id"])
-    assert row["status"] == "SUCCEEDED"
+    # The job represents "this version's current async work" end to end —
+    # it stays PROCESSING (not SUCCEEDED) until M3's parse_document resolves it.
+    assert row["status"] == "PROCESSING"
     version = await _version_row(seeded["version_id"])
     assert version["status"] == "PROCESSING"
 
