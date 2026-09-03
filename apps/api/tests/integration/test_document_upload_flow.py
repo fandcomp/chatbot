@@ -10,10 +10,21 @@ created correctly.
 Requires `docker compose up -d` to be running from the repo root.
 """
 
+import uuid
+
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 
+from app.core.database import async_session_factory
+from app.documents.models import DocumentVersion
 from app.ingestion import router as ingestion_router
+from app.parsing.models import (
+    DocumentNode,
+    DocumentNodeType,
+    DocumentRegion,
+    StructuralRegionType,
+)
 
 REGISTER_PAYLOAD = {
     "organization_name": "Acme Regulatory",
@@ -150,6 +161,80 @@ async def test_delete_document_removes_it_and_its_processing_job(client: AsyncCl
     assert (await client.get(f"/documents/{document_id}")).status_code == 404
     assert (await client.get(f"/processing-jobs/{job_id}")).status_code == 404
     assert (await client.get("/documents")).json() == []
+
+
+async def test_delete_document_removes_a_parsed_documents_regions_and_nodes(
+    client: AsyncClient,
+) -> None:
+    # Arrange — simulate M3's worker having already populated document_regions/
+    # document_nodes for this version (the worker runs out-of-process, so this
+    # suite can't exercise it directly). Deleting a document that reached
+    # PARSED/REVIEW_REQUIRED must not hit a ForeignKeyViolationError.
+    space_id = await _register_and_get_space_id(client)
+    upload_response = await client.post(
+        "/documents/upload",
+        files={"file": ("report.pdf", _PDF_BYTES, "application/pdf")},
+        data={"knowledge_space_id": space_id},
+    )
+    document_id = upload_response.json()["document_id"]
+    version_id = uuid.UUID(upload_response.json()["document_version_id"])
+
+    async with async_session_factory() as session:
+        # organization_id isn't exposed on DocumentPublic; pull it off the version.
+        version = (
+            await session.execute(
+                select(DocumentVersion).where(DocumentVersion.id == version_id)
+            )
+        ).scalar_one()
+        organization_id = version.organization_id
+
+        region = DocumentRegion(
+            organization_id=organization_id,
+            document_version_id=version_id,
+            region_type=StructuralRegionType.FREEFORM_SECTION,
+            page_start=1,
+            page_end=1,
+            sequence_number=0,
+            confidence=0.9,
+        )
+        session.add(region)
+        await session.flush()
+
+        node = DocumentNode(
+            organization_id=organization_id,
+            document_version_id=version_id,
+            region_id=region.id,
+            node_type=DocumentNodeType.PARAGRAPH,
+            depth=0,
+            sequence_number=0,
+            page_start=1,
+            page_end=1,
+            confidence=0.9,
+            source_provenance={"parser": "docling", "level": "LEVEL_1_NATIVE", "page": 1},
+            structural_path_json=[{"node_type": "PARAGRAPH", "label": None, "title": None}],
+            structural_depth=1,
+        )
+        session.add(node)
+        await session.commit()
+
+    # Act
+    delete_response = await client.delete(f"/documents/{document_id}")
+
+    # Assert
+    assert delete_response.status_code == 204
+    async with async_session_factory() as session:
+        remaining_nodes = (
+            await session.execute(
+                select(DocumentNode).where(DocumentNode.document_version_id == version_id)
+            )
+        ).scalars().all()
+        remaining_regions = (
+            await session.execute(
+                select(DocumentRegion).where(DocumentRegion.document_version_id == version_id)
+            )
+        ).scalars().all()
+        assert remaining_nodes == []
+        assert remaining_regions == []
 
 
 async def test_upload_with_unknown_knowledge_space_returns_404(client: AsyncClient) -> None:

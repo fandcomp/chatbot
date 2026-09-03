@@ -12,6 +12,7 @@ from app.documents.models import Document, DocumentVersion
 from app.documents.schemas import DocumentPublic
 from app.ingestion.models import ProcessingJob
 from app.organizations.models import OrganizationMember, OrgRole
+from app.parsing.models import DocumentNode, DocumentRegion
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -103,17 +104,34 @@ async def delete_document(
     version_ids = [version.id for version in versions]
 
     # No ORM `relationship()` is declared between these models (see
-    # documents/models.py, ingestion/models.py), so SQLAlchemy's unit-of-work
-    # has no FK dependency graph to order these deletes automatically —
-    # explicit ordering (children first, flushed between stages) is required,
-    # otherwise it may attempt to delete `documents` before its dependents
-    # and hit a ForeignKeyViolationError.
+    # documents/models.py, ingestion/models.py, parsing/models.py), so
+    # SQLAlchemy's unit-of-work has no FK dependency graph to order these
+    # deletes automatically — explicit ordering (children first, flushed
+    # between stages) is required, otherwise it may attempt to delete
+    # `documents` before its dependents and hit a ForeignKeyViolationError.
     if version_ids:
         jobs_result = await db.execute(
             select(ProcessingJob).where(ProcessingJob.document_version_id.in_(version_ids))
         )
         for job in jobs_result.scalars().all():
             await db.delete(job)
+
+        # M3's parser (workers/document_worker) may have populated these for
+        # a version that reached PARSED/REVIEW_REQUIRED — delete nodes before
+        # regions (document_nodes.region_id -> document_regions.id) and
+        # before the version itself.
+        nodes_result = await db.execute(
+            select(DocumentNode).where(DocumentNode.document_version_id.in_(version_ids))
+        )
+        for node in nodes_result.scalars().all():
+            await db.delete(node)
+        await db.flush()
+
+        regions_result = await db.execute(
+            select(DocumentRegion).where(DocumentRegion.document_version_id.in_(version_ids))
+        )
+        for region in regions_result.scalars().all():
+            await db.delete(region)
         await db.flush()
 
     for version in versions:
