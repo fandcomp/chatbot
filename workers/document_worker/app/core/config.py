@@ -25,5 +25,15 @@ class Settings(BaseSettings):
     # hand-sync duplication is needed here.
     CHUNK_MAX_TOKENS: int = 400
 
+    # INDEXING (M6) — mirrors apps/api/app/core/config.py's QDRANT_URL/
+    # QDRANT_API_KEY/VOYAGE_API_KEY/EMBEDDING_MODEL (same hand-synced-config
+    # pattern as STRUCTURE_HIGH_CONFIDENCE above); VOYAGE_EMBEDDING_DIMENSION
+    # is worker-only since apps/api never calls Voyage itself.
+    QDRANT_URL: str
+    QDRANT_API_KEY: str = ""
+    VOYAGE_API_KEY: str = ""
+    EMBEDDING_MODEL: str = "voyage-context-4"
+    VOYAGE_EMBEDDING_DIMENSION: int = 1024
+
 
 settings = Settings()

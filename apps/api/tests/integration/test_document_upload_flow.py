@@ -11,12 +11,15 @@ Requires `docker compose up -d` to be running from the repo root.
 """
 
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
+from app.chunking.models import DocumentChunk
 from app.core.database import async_session_factory
+from app.documents import router as documents_router
 from app.documents.models import DocumentVersion
 from app.ingestion import router as ingestion_router
 from app.parsing.models import (
@@ -235,6 +238,126 @@ async def test_delete_document_removes_a_parsed_documents_regions_and_nodes(
         ).scalars().all()
         assert remaining_nodes == []
         assert remaining_regions == []
+
+
+async def test_delete_document_removes_chunks_and_cleans_up_qdrant(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Arrange — simulate M5/M6 having populated document_chunks (referencing
+    # a node via a NOT NULL, non-cascading FK) for a version that reached
+    # ACTIVE. Deleting it must not hit a ForeignKeyViolationError, and must
+    # call M6's Qdrant cleanup (ADR-002: stale points are disallowed).
+    space_id = await _register_and_get_space_id(client)
+    upload_response = await client.post(
+        "/documents/upload",
+        files={"file": ("report.pdf", _PDF_BYTES, "application/pdf")},
+        data={"knowledge_space_id": space_id},
+    )
+    document_id = upload_response.json()["document_id"]
+    version_id = uuid.UUID(upload_response.json()["document_version_id"])
+
+    async with async_session_factory() as session:
+        version = (
+            await session.execute(select(DocumentVersion).where(DocumentVersion.id == version_id))
+        ).scalar_one()
+        organization_id = version.organization_id
+
+        region = DocumentRegion(
+            organization_id=organization_id,
+            document_version_id=version_id,
+            region_type=StructuralRegionType.FREEFORM_SECTION,
+            page_start=1,
+            page_end=1,
+            sequence_number=0,
+            confidence=0.9,
+        )
+        session.add(region)
+        await session.flush()
+
+        node = DocumentNode(
+            organization_id=organization_id,
+            document_version_id=version_id,
+            region_id=region.id,
+            node_type=DocumentNodeType.PARAGRAPH,
+            depth=0,
+            sequence_number=0,
+            page_start=1,
+            page_end=1,
+            confidence=0.9,
+            source_provenance={"parser": "docling", "level": "LEVEL_1_NATIVE", "page": 1},
+            structural_path_json=[{"node_type": "PARAGRAPH", "label": None, "title": None}],
+            structural_depth=1,
+        )
+        session.add(node)
+        await session.flush()
+
+        chunk = DocumentChunk(
+            organization_id=organization_id,
+            document_id=uuid.UUID(document_id),
+            document_version_id=version_id,
+            source_node_id=node.id,
+            depth=0,
+            sequence_number=0,
+            page_start=1,
+            page_end=1,
+            original_text="Original text.",
+            contextual_text="Dokumen: report\nOriginal text.",
+            token_count=5,
+            structural_path_text=None,
+        )
+        session.add(chunk)
+        await session.commit()
+
+    mock_delete_points = AsyncMock()
+    monkeypatch.setattr(documents_router, "delete_document_points", mock_delete_points)
+
+    # Act
+    delete_response = await client.delete(f"/documents/{document_id}")
+
+    # Assert
+    assert delete_response.status_code == 204
+    mock_delete_points.assert_called_once_with(organization_id, uuid.UUID(document_id))
+    async with async_session_factory() as session:
+        remaining_chunks = (
+            await session.execute(
+                select(DocumentChunk).where(DocumentChunk.document_version_id == version_id)
+            )
+        ).scalars().all()
+        assert remaining_chunks == []
+
+
+async def test_delete_document_rolls_back_when_qdrant_cleanup_fails(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A Qdrant delete failure must abort the whole transaction before
+    # anything commits — the document (and everything under it) must survive,
+    # mirroring the existing S3 delete_object placement's failure semantics.
+    space_id = await _register_and_get_space_id(client)
+    upload_response = await client.post(
+        "/documents/upload",
+        files={"file": ("report.pdf", _PDF_BYTES, "application/pdf")},
+        data={"knowledge_space_id": space_id},
+    )
+    document_id = upload_response.json()["document_id"]
+
+    monkeypatch.setattr(
+        documents_router,
+        "delete_document_points",
+        AsyncMock(side_effect=RuntimeError("Qdrant unreachable")),
+    )
+
+    with pytest.raises(RuntimeError, match="Qdrant unreachable"):
+        await client.delete(f"/documents/{document_id}")
+
+    async with async_session_factory() as session:
+        remaining_version = (
+            await session.execute(
+                select(DocumentVersion).where(
+                    DocumentVersion.document_id == uuid.UUID(document_id)
+                )
+            )
+        ).scalar_one_or_none()
+        assert remaining_version is not None
 
 
 async def test_upload_with_unknown_knowledge_space_returns_404(client: AsyncClient) -> None:

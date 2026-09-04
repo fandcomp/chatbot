@@ -14,7 +14,17 @@ split.
 
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, MetaData, Numeric, String, Table, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Integer,
+    MetaData,
+    Numeric,
+    String,
+    Table,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -66,16 +76,19 @@ document_versions = Table(
     Column("original_filename", String(255)),
     Column("storage_path", String(1024)),
     Column("status", _document_lifecycle_status),
+    # M6: index_document's Qdrant payload includes the source version number.
+    Column("version_number", Integer),
     Column("updated_at", DateTime(timezone=True)),
 )
 
-# M5: title only — this worker never writes to `documents`, it only reads
-# the title for contextual_text rendering.
+# M5/M6: title (contextual_text rendering) + knowledge_space_id (M6 payload
+# field) — this worker never writes to `documents`, it only reads both.
 documents = Table(
     "documents",
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("title", String(255)),
+    Column("knowledge_space_id", UUID(as_uuid=True)),
 )
 
 processing_jobs = Table(

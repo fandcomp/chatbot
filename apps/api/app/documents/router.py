@@ -1,15 +1,17 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import log_action
 from app.auth.dependencies import get_current_membership, require_role
+from app.chunking.models import DocumentChunk
 from app.core.database import get_db
 from app.core.storage import delete_object
 from app.documents.models import Document, DocumentVersion
 from app.documents.schemas import DocumentPublic
+from app.indexing.qdrant_client import delete_document_points
 from app.ingestion.models import ProcessingJob
 from app.organizations.models import OrganizationMember, OrgRole
 from app.parsing.models import DocumentNode, DocumentRegion
@@ -116,6 +118,17 @@ async def delete_document(
         for job in jobs_result.scalars().all():
             await db.delete(job)
 
+        # M5's worker may have populated document_chunks for a version that
+        # reached INDEXING/ACTIVE — a chunk's source_node_id FK is NOT NULL
+        # with no ON DELETE CASCADE, so chunks must go before nodes. A single
+        # bulk Core DELETE sidesteps the self-referential parent_chunk_id/
+        # previous_chunk_id/next_chunk_id ordering problem entirely (all
+        # matching rows vanish in one statement, so no row is ever left
+        # referencing an already-deleted sibling).
+        await db.execute(
+            delete(DocumentChunk).where(DocumentChunk.document_version_id.in_(version_ids))
+        )
+
         # M3's parser (workers/document_worker) may have populated these for
         # a version that reached PARSED/REVIEW_REQUIRED — delete nodes before
         # regions (document_nodes.region_id -> document_regions.id) and
@@ -138,6 +151,12 @@ async def delete_document(
         delete_object(version.storage_path)
         await db.delete(version)
     await db.flush()
+
+    # M6 (ADR-002): stale Qdrant points are explicitly disallowed. Delete
+    # before commit, mirroring delete_object's placement above — an
+    # exception here must abort the whole transaction before anything
+    # commits, the same failure semantics the S3 delete already has.
+    await delete_document_points(membership.organization_id, document_id)
 
     await db.delete(document)
     await log_action(

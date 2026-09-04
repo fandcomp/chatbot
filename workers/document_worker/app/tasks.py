@@ -1,7 +1,7 @@
 """M2's `verify_upload` (SHA-256 re-verification), M3's `parse_document`
 (Docling-based generic structure parsing), M4's `interpret_structure`
-(specialized interpretation), and M5's `chunk_document` (hierarchical
-chunking). Embedding/indexing are M6+.
+(specialized interpretation), M5's `chunk_document` (hierarchical chunking),
+and M6's `index_document` (Voyage embedding + Qdrant/sparse indexing).
 """
 
 import asyncio
@@ -15,6 +15,7 @@ from botocore.exceptions import (
     EndpointConnectionError,
 )
 from celery.exceptions import SoftTimeLimitExceeded
+from qdrant_client import AsyncQdrantClient
 from sqlalchemy import bindparam, insert, select, update
 
 from app.celery_app import celery_app
@@ -30,6 +31,9 @@ from app.database import (
     documents,
     processing_jobs,
 )
+from app.indexing.embedding_gateway import EmbeddingGateway
+from app.indexing.pipeline import build_indexing_points
+from app.indexing.qdrant_writer import ensure_collection, upsert_chunks
 from app.interpretation.pipeline import interpret_document
 from app.parsing.pipeline import run_pipeline
 from app.storage import get_object_bytes
@@ -610,16 +614,23 @@ async def _chunk_document_async(job_id: str, attempts: int) -> None:
                         next_chunk_updates,
                     )
 
+            # Job stays PROCESSING (not SUCCEEDED) — chained into
+            # index_document under the same job row below. Unlike M4->M5,
+            # there is no human-approval gate between chunking and indexing,
+            # so this mirrors M2->M3->M4's single-job-chain pattern instead.
             await session.execute(
                 update(processing_jobs)
                 .where(processing_jobs.c.id == job_id)
-                .values(status="SUCCEEDED", updated_at=now)
+                .values(status="PROCESSING", updated_at=now)
             )
             await session.commit()
         except Exception as exc:  # noqa: BLE001 - a persistence failure here
             # must never leave the job stuck at PROCESSING forever either.
             await session.rollback()
             await _fail(f"Persisting chunks failed: {exc}")
+            return
+
+    index_document.delay(job_id)
 
 
 @celery_app.task(
@@ -631,3 +642,120 @@ async def _chunk_document_async(job_id: str, attempts: int) -> None:
 )
 def chunk_document(self, job_id: str) -> None:
     asyncio.run(_chunk_document_async(job_id, attempts=self.request.retries + 1))
+
+
+async def _index_document_async(job_id: str, attempts: int) -> None:
+    async with async_session_factory() as session:
+        job_row = (
+            await session.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
+        ).mappings().one()
+        version_id = job_row["document_version_id"]
+
+        await session.execute(
+            update(processing_jobs)
+            .where(processing_jobs.c.id == job_id)
+            .values(status="PROCESSING", attempts=attempts, updated_at=datetime.now(UTC))
+        )
+        await session.commit()
+
+        version_row = (
+            await session.execute(
+                select(document_versions).where(document_versions.c.id == version_id)
+            )
+        ).mappings().one()
+        document_row = (
+            await session.execute(
+                select(documents).where(documents.c.id == version_row["document_id"])
+            )
+        ).mappings().one()
+
+        async def _fail(message: str) -> None:
+            await session.execute(
+                update(processing_jobs)
+                .where(processing_jobs.c.id == job_id)
+                .values(status="FAILED", error_message=message, updated_at=datetime.now(UTC))
+            )
+            await session.execute(
+                update(document_versions)
+                .where(document_versions.c.id == version_id)
+                .values(status="PROCESSING_FAILED", updated_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+        chunk_rows = (
+            await session.execute(
+                select(document_chunks).where(document_chunks.c.document_version_id == version_id)
+            )
+        ).mappings().all()
+        node_rows = (
+            await session.execute(
+                select(document_nodes).where(document_nodes.c.document_version_id == version_id)
+            )
+        ).mappings().all()
+        region_rows = (
+            await session.execute(
+                select(document_regions).where(
+                    document_regions.c.document_version_id == version_id
+                )
+            )
+        ).mappings().all()
+
+        node_rows_by_id = {row["id"]: dict(row) for row in node_rows}
+        region_rows_by_id = {row["id"]: dict(row) for row in region_rows}
+
+        # A point is only ever upserted on the path that goes on to set the
+        # version ACTIVE below — bake that into the payload's document_status
+        # now rather than the version's current (still "INDEXING") DB value,
+        # or every point would carry a permanently stale status that M7's
+        # mandatory document_status=ACTIVE retrieval filter would never match.
+        active_version_row = {**dict(version_row), "status": "ACTIVE"}
+
+        try:
+            result = await build_indexing_points(
+                [dict(row) for row in chunk_rows],
+                node_rows_by_id,
+                region_rows_by_id,
+                active_version_row,
+                dict(document_row),
+                EmbeddingGateway(),
+            )
+        except Exception as exc:  # noqa: BLE001 - a Voyage API error (bad
+            # request, malformed response) must resolve the job to FAILED,
+            # not strand it at PROCESSING forever.
+            await _fail(f"Embedding failed: {exc}")
+            return
+
+        client = AsyncQdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY or None)
+        try:
+            await ensure_collection(client, settings.VOYAGE_EMBEDDING_DIMENSION)
+            await upsert_chunks(client, result.points)
+        except Exception as exc:  # noqa: BLE001 - a Qdrant write failure must
+            # resolve the job to FAILED, not strand it at PROCESSING forever.
+            await _fail(f"Indexing failed: {exc}")
+            return
+        finally:
+            await client.close()
+
+        now = datetime.now(UTC)
+        await session.execute(
+            update(processing_jobs)
+            .where(processing_jobs.c.id == job_id)
+            .values(status="SUCCEEDED", updated_at=now)
+        )
+        await session.execute(
+            update(document_versions)
+            .where(document_versions.c.id == version_id)
+            .values(status="ACTIVE", updated_at=now)
+        )
+        await session.commit()
+
+
+@celery_app.task(
+    bind=True,
+    name="document_worker.index_document",
+    autoretry_for=(OSError, TimeoutError),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 5},
+)
+def index_document(self, job_id: str) -> None:
+    asyncio.run(_index_document_async(job_id, attempts=self.request.retries + 1))

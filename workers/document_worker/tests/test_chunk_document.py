@@ -1,4 +1,5 @@
 import uuid
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import insert, select, text
@@ -183,10 +184,15 @@ async def test_chunk_document_persists_chunks_and_marks_job_succeeded(
     await _seed_nodes([article, body])
 
     try:
-        await _chunk_document_async(str(seeded["job_id"]), attempts=1)
+        with patch("app.tasks.index_document.delay") as mock_delay:
+            await _chunk_document_async(str(seeded["job_id"]), attempts=1)
 
+        # Chunking never marks the job SUCCEEDED itself anymore — it chains
+        # into index_document (M6) under the SAME job row, mirroring
+        # M2->M3->M4's pattern (no human-approval gate sits in between).
         job = await _job_row(seeded["job_id"])
-        assert job["status"] == "SUCCEEDED"
+        assert job["status"] == "PROCESSING"
+        mock_delay.assert_called_once_with(str(seeded["job_id"]))
 
         version = await _version_row(seeded["version_id"])
         assert version["status"] == "INDEXING"
@@ -232,7 +238,8 @@ async def test_chunk_document_links_siblings_via_previous_and_next(seeded_docume
     await _seed_nodes([section_1, section_2])
 
     try:
-        await _chunk_document_async(str(seeded["job_id"]), attempts=1)
+        with patch("app.tasks.index_document.delay"):
+            await _chunk_document_async(str(seeded["job_id"]), attempts=1)
 
         chunks = sorted(await _chunk_rows(seeded["version_id"]), key=lambda c: c["sequence_number"])
         assert len(chunks) == 2
