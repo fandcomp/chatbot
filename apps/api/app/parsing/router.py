@@ -7,8 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit.service import log_action
 from app.auth.dependencies import get_current_membership, require_role
 from app.core.database import get_db
+from app.core.tasks import enqueue_chunk_document
 from app.documents.models import DocumentLifecycleStatus
 from app.documents.router import get_org_scoped_document, latest_version
+from app.ingestion.models import ProcessingJob, ProcessingJobStatus
 from app.organizations.models import OrganizationMember, OrgRole
 from app.parsing.models import DocumentNode, DocumentRegion, DocumentStructureProfile
 from app.parsing.schemas import (
@@ -263,6 +265,21 @@ async def approve_document_structure(
         )
 
     version.status = DocumentLifecycleStatus.APPROVED
+
+    # M2-M4's job for this version is already terminal (SUCCEEDED) by the
+    # time it reaches REVIEW_REQUIRED — chunking (M5) needs its own new job
+    # row rather than regressing a terminal job back to PROCESSING (mirrors
+    # the auto-approved path's same reasoning in the worker's
+    # interpret_structure task).
+    job = ProcessingJob(
+        organization_id=membership.organization_id,
+        document_version_id=version.id,
+        status=ProcessingJobStatus.QUEUED,
+    )
+    db.add(job)
+    await db.flush()
+    job.celery_task_id = enqueue_chunk_document(str(job.id))
+
     await log_action(
         db,
         actor_id=membership.user_id,

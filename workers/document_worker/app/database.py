@@ -59,11 +59,23 @@ document_versions = Table(
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("organization_id", UUID(as_uuid=True)),
+    # M5: chunk_document needs this to populate document_chunks.document_id
+    # and to join documents.title for contextual_text's "Dokumen:" line.
+    Column("document_id", UUID(as_uuid=True)),
     Column("file_hash", String(64)),
     Column("original_filename", String(255)),
     Column("storage_path", String(1024)),
     Column("status", _document_lifecycle_status),
     Column("updated_at", DateTime(timezone=True)),
+)
+
+# M5: title only — this worker never writes to `documents`, it only reads
+# the title for contextual_text rendering.
+documents = Table(
+    "documents",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("title", String(255)),
 )
 
 processing_jobs = Table(
@@ -253,6 +265,32 @@ document_structure_profiles = Table(
     Column("contains_tables", Boolean),
     Column("contains_diagrams", Boolean),
     Column("contains_embedded_document", Boolean),
+    Column("created_at", DateTime(timezone=True)),
+    Column("updated_at", DateTime(timezone=True)),
+)
+
+# M5: this worker is the sole writer of document_chunks, mirroring the
+# document_regions/document_nodes pattern above.
+document_chunks = Table(
+    "document_chunks",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("organization_id", UUID(as_uuid=True)),
+    Column("document_id", UUID(as_uuid=True)),
+    Column("document_version_id", UUID(as_uuid=True)),
+    Column("source_node_id", UUID(as_uuid=True)),
+    Column("parent_chunk_id", UUID(as_uuid=True)),
+    Column("previous_chunk_id", UUID(as_uuid=True)),
+    Column("next_chunk_id", UUID(as_uuid=True)),
+    Column("depth", Integer),
+    Column("sequence_number", Integer),
+    Column("page_start", Integer),
+    Column("page_end", Integer),
+    Column("original_text", Text),
+    Column("contextual_text", Text),
+    Column("semantic_summary", Text),
+    Column("token_count", Integer),
+    Column("structural_path_text", Text),
     Column("created_at", DateTime(timezone=True)),
     Column("updated_at", DateTime(timezone=True)),
 )

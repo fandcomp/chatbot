@@ -13,6 +13,8 @@ from sqlalchemy import select, update
 from app.core.database import async_session_factory
 from app.documents.models import DocumentVersion
 from app.ingestion import router as ingestion_router
+from app.ingestion.models import ProcessingJob
+from app.parsing import router as parsing_router
 from app.parsing.models import DocumentNode, DocumentNodeType, DocumentRegion, StructuralRegionType
 
 REGISTER_PAYLOAD = {
@@ -28,6 +30,9 @@ _PDF_BYTES = b"%PDF-1.4\n%test document content\n%%EOF"
 def _stub_enqueue(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         ingestion_router, "enqueue_verify_upload", lambda job_id: "fake-celery-task-id"
+    )
+    monkeypatch.setattr(
+        parsing_router, "enqueue_chunk_document", lambda job_id: "fake-celery-task-id"
     )
 
 
@@ -280,6 +285,36 @@ async def test_editor_can_approve_a_document_pending_review(client_factory) -> N
 
     assert response.status_code == 200
     assert response.json()["status"] == "APPROVED"
+
+
+async def test_approve_creates_a_new_processing_job_and_enqueues_chunking(
+    client_factory,
+) -> None:
+    owner_client = client_factory()
+    await owner_client.post("/auth/register", json=REGISTER_PAYLOAD)
+    document_id, _node_id = await _upload_and_seed_structure(
+        owner_client, version_status="REVIEW_REQUIRED"
+    )
+    document_before = (await owner_client.get(f"/documents/{document_id}")).json()
+    version_id = uuid.UUID(document_before["latest_version_id"])
+    original_job_id = uuid.UUID(document_before["latest_processing_job_id"])
+
+    response = await owner_client.post(f"/documents/{document_id}/approve")
+    assert response.status_code == 200
+
+    async with async_session_factory() as session:
+        jobs = (
+            await session.execute(
+                select(ProcessingJob).where(ProcessingJob.document_version_id == version_id)
+            )
+        ).scalars().all()
+
+    # The original M2-M4 job plus a brand-new chunking job — never the same
+    # row regressed back to an active status.
+    assert len(jobs) == 2
+    new_job = next(job for job in jobs if job.id != original_job_id)
+    assert new_job.status.value == "QUEUED"
+    assert new_job.celery_task_id == "fake-celery-task-id"
 
 
 async def test_approve_rejects_a_document_not_pending_review(client_factory) -> None:

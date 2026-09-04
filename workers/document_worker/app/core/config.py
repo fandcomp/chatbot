@@ -21,5 +21,9 @@ class Settings(BaseSettings):
     STRUCTURE_HIGH_CONFIDENCE: float = 0.90
     STRUCTURE_REVIEW_THRESHOLD: float = 0.70
 
+    # CHUNKING (M5) — worker-only, apps/api never computes chunks so no
+    # hand-sync duplication is needed here.
+    CHUNK_MAX_TOKENS: int = 400
+
 
 settings = Settings()

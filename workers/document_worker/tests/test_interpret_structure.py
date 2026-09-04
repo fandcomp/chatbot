@@ -1,4 +1,5 @@
 import uuid
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import insert, select, text
@@ -183,7 +184,8 @@ async def test_interpret_structure_retypes_nodes_and_marks_version_approved(
     )
 
     try:
-        await _interpret_structure_async(str(seeded["job_id"]), attempts=1)
+        with patch("app.tasks.chunk_document.delay"):
+            await _interpret_structure_async(str(seeded["job_id"]), attempts=1)
 
         job = await _job_row(seeded["job_id"])
         assert job["status"] == "SUCCEEDED"
@@ -207,6 +209,64 @@ async def test_interpret_structure_retypes_nodes_and_marks_version_approved(
                 )
             ).mappings().one()
         assert profile["contains_articles"] is True
+    finally:
+        await _cleanup(seeded["version_id"])
+
+
+@pytest.mark.asyncio
+async def test_interpret_structure_creates_a_new_job_and_chains_into_chunk_document_when_approved(
+    seeded_document_version,
+):
+    seeded = seeded_document_version
+    await _seed_version_and_job(seeded, status="PARSED")
+    region_id = uuid.uuid4()
+    await _seed_region(seeded, region_id)
+    await _seed_nodes(
+        [_node_values(seeded, region_id, node_type="PARAGRAPH", text="Pasal 1", confidence=0.99)]
+    )
+
+    try:
+        with patch("app.tasks.chunk_document.delay") as mock_delay:
+            await _interpret_structure_async(str(seeded["job_id"]), attempts=1)
+
+        version = await _version_row(seeded["version_id"])
+        assert version["status"] == "APPROVED"
+
+        mock_delay.assert_called_once()
+        new_job_id = uuid.UUID(mock_delay.call_args[0][0])
+        assert new_job_id != seeded["job_id"]
+
+        async with async_session_factory() as session:
+            new_job = (
+                await session.execute(
+                    select(processing_jobs).where(processing_jobs.c.id == new_job_id)
+                )
+            ).mappings().one()
+        assert new_job["status"] == "QUEUED"
+        assert new_job["document_version_id"] == seeded["version_id"]
+    finally:
+        await _cleanup(seeded["version_id"])
+
+
+@pytest.mark.asyncio
+async def test_interpret_structure_does_not_chain_when_review_required(
+    seeded_document_version,
+):
+    seeded = seeded_document_version
+    await _seed_version_and_job(seeded, status="REVIEW_REQUIRED")
+    region_id = uuid.uuid4()
+    await _seed_region(seeded, region_id)
+    await _seed_nodes(
+        [_node_values(seeded, region_id, node_type="PARAGRAPH", text="Pasal 1", confidence=0.99)]
+    )
+
+    try:
+        with patch("app.tasks.chunk_document.delay") as mock_delay:
+            await _interpret_structure_async(str(seeded["job_id"]), attempts=1)
+
+        version = await _version_row(seeded["version_id"])
+        assert version["status"] == "REVIEW_REQUIRED"
+        mock_delay.assert_not_called()
     finally:
         await _cleanup(seeded["version_id"])
 

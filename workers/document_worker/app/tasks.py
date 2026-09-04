@@ -1,5 +1,7 @@
-"""M2's `verify_upload` (SHA-256 re-verification) and M3's `parse_document`
-(Docling-based generic structure parsing, chunking/embedding are M5+).
+"""M2's `verify_upload` (SHA-256 re-verification), M3's `parse_document`
+(Docling-based generic structure parsing), M4's `interpret_structure`
+(specialized interpretation), and M5's `chunk_document` (hierarchical
+chunking). Embedding/indexing are M6+.
 """
 
 import asyncio
@@ -16,13 +18,16 @@ from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy import bindparam, insert, select, update
 
 from app.celery_app import celery_app
+from app.chunking.pipeline import build_document_chunks
 from app.core.config import settings
 from app.database import (
     async_session_factory,
+    document_chunks,
     document_nodes,
     document_regions,
     document_structure_profiles,
     document_versions,
+    documents,
     processing_jobs,
 )
 from app.interpretation.pipeline import interpret_document
@@ -412,6 +417,13 @@ async def _interpret_structure_async(job_id: str, attempts: int) -> None:
             final_status = "REVIEW_REQUIRED"
 
         now = datetime.now(UTC)
+        # M2-M4's job is already terminal (SUCCEEDED) by the time a version
+        # lands here — chunking needs its OWN new job row rather than
+        # regressing a terminal job back to PROCESSING (that would break the
+        # frontend's "stop polling once terminal" invariant). Only set once
+        # persistence below actually succeeds; reset to None on failure so a
+        # rolled-back row is never enqueued.
+        chunk_job_id: uuid.UUID | None = None
         try:
             node_updates = [_node_update_row(node, now) for node in result.nodes]
             if node_updates:
@@ -447,6 +459,18 @@ async def _interpret_structure_async(job_id: str, attempts: int) -> None:
                 )
             )
 
+            if final_status == "APPROVED":
+                chunk_job_id = uuid.uuid4()
+                await session.execute(
+                    insert(processing_jobs).values(
+                        id=chunk_job_id,
+                        organization_id=organization_id,
+                        document_version_id=version_id,
+                        status="QUEUED",
+                        attempts=0,
+                    )
+                )
+
             await session.execute(
                 update(processing_jobs)
                 .where(processing_jobs.c.id == job_id)
@@ -461,7 +485,11 @@ async def _interpret_structure_async(job_id: str, attempts: int) -> None:
         except Exception as exc:  # noqa: BLE001 - a persistence failure here
             # must never leave the job stuck at PROCESSING forever either.
             await session.rollback()
+            chunk_job_id = None
             await _fail(f"Persisting structural interpretation failed: {exc}")
+
+    if chunk_job_id is not None:
+        chunk_document.delay(str(chunk_job_id))
 
 
 @celery_app.task(
@@ -473,3 +501,133 @@ async def _interpret_structure_async(job_id: str, attempts: int) -> None:
 )
 def interpret_structure(self, job_id: str) -> None:
     asyncio.run(_interpret_structure_async(job_id, attempts=self.request.retries + 1))
+
+
+def _chunk_row(chunk, organization_id, document_id, document_version_id, now) -> dict:
+    return {
+        "id": chunk.id,
+        "organization_id": organization_id,
+        "document_id": document_id,
+        "document_version_id": document_version_id,
+        "source_node_id": chunk.source_node_id,
+        "parent_chunk_id": chunk.parent_chunk_id,
+        "previous_chunk_id": chunk.previous_chunk_id,
+        # next_chunk_id is a forward self-reference (like M3's NodeSpec.next_id)
+        # — set via a bulk UPDATE after every row exists, not here.
+        "depth": chunk.depth,
+        "sequence_number": chunk.sequence_number,
+        "page_start": chunk.page_start,
+        "page_end": chunk.page_end,
+        "original_text": chunk.original_text,
+        "contextual_text": chunk.contextual_text,
+        "semantic_summary": None,
+        "token_count": chunk.token_count,
+        "structural_path_text": chunk.structural_path_text,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+async def _chunk_document_async(job_id: str, attempts: int) -> None:
+    async with async_session_factory() as session:
+        job_row = (
+            await session.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
+        ).mappings().one()
+        organization_id = job_row["organization_id"]
+        version_id = job_row["document_version_id"]
+
+        await session.execute(
+            update(processing_jobs)
+            .where(processing_jobs.c.id == job_id)
+            .values(status="PROCESSING", attempts=attempts, updated_at=datetime.now(UTC))
+        )
+        await session.execute(
+            update(document_versions)
+            .where(document_versions.c.id == version_id)
+            .values(status="INDEXING", updated_at=datetime.now(UTC))
+        )
+        await session.commit()
+
+        version_row = (
+            await session.execute(
+                select(document_versions).where(document_versions.c.id == version_id)
+            )
+        ).mappings().one()
+        document_id = version_row["document_id"]
+
+        document_row = (
+            await session.execute(select(documents).where(documents.c.id == document_id))
+        ).mappings().one()
+        document_title = document_row["title"]
+
+        async def _fail(message: str) -> None:
+            await session.execute(
+                update(processing_jobs)
+                .where(processing_jobs.c.id == job_id)
+                .values(status="FAILED", error_message=message, updated_at=datetime.now(UTC))
+            )
+            await session.execute(
+                update(document_versions)
+                .where(document_versions.c.id == version_id)
+                .values(status="PROCESSING_FAILED", updated_at=datetime.now(UTC))
+            )
+            await session.commit()
+
+        node_rows = (
+            await session.execute(
+                select(document_nodes).where(document_nodes.c.document_version_id == version_id)
+            )
+        ).mappings().all()
+
+        try:
+            result = build_document_chunks([dict(row) for row in node_rows], document_title)
+        except Exception as exc:  # noqa: BLE001 - a malformed/unexpected node
+            # shape must resolve the job to FAILED, not strand it at
+            # PROCESSING forever.
+            await _fail(f"Chunking failed: {exc}")
+            return
+
+        now = datetime.now(UTC)
+        try:
+            if result.chunks:
+                await session.execute(
+                    insert(document_chunks),
+                    [
+                        _chunk_row(chunk, organization_id, document_id, version_id, now)
+                        for chunk in result.chunks
+                    ],
+                )
+                next_chunk_updates = [
+                    {"chunk_id": chunk.id, "next_chunk_id": chunk.next_chunk_id}
+                    for chunk in result.chunks
+                    if chunk.next_chunk_id is not None
+                ]
+                if next_chunk_updates:
+                    await session.execute(
+                        update(document_chunks)
+                        .where(document_chunks.c.id == bindparam("chunk_id"))
+                        .values(next_chunk_id=bindparam("next_chunk_id")),
+                        next_chunk_updates,
+                    )
+
+            await session.execute(
+                update(processing_jobs)
+                .where(processing_jobs.c.id == job_id)
+                .values(status="SUCCEEDED", updated_at=now)
+            )
+            await session.commit()
+        except Exception as exc:  # noqa: BLE001 - a persistence failure here
+            # must never leave the job stuck at PROCESSING forever either.
+            await session.rollback()
+            await _fail(f"Persisting chunks failed: {exc}")
+
+
+@celery_app.task(
+    bind=True,
+    name="document_worker.chunk_document",
+    autoretry_for=(OSError, TimeoutError),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 5},
+)
+def chunk_document(self, job_id: str) -> None:
+    asyncio.run(_chunk_document_async(job_id, attempts=self.request.retries + 1))

@@ -11,3 +11,8 @@ celery_client = Celery(broker=settings.REDIS_URL)
 def enqueue_verify_upload(job_id: str) -> str:
     result = celery_client.send_task("document_worker.verify_upload", args=[job_id])
     return result.id
+
+
+def enqueue_chunk_document(job_id: str) -> str:
+    result = celery_client.send_task("document_worker.chunk_document", args=[job_id])
+    return result.id
