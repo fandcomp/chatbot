@@ -11,6 +11,7 @@ from app.core.logging import configure_logging
 from app.documents.router import router as documents_router
 from app.ingestion.router import router as ingestion_router
 from app.knowledge.router import router as knowledge_router
+from app.llm.router import router as llm_router
 from app.organizations.router import router as organizations_router
 from app.parsing.router import router as parsing_router
 from app.reranking.router import router as reranking_router
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     app.include_router(ingestion_router)
     app.include_router(retrieval_router)
     app.include_router(reranking_router)
+    app.include_router(llm_router)
 
     return app
 
