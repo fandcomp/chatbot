@@ -51,7 +51,7 @@ Per `docs/MASTER_DEVELOPMENT_SPEC.md` §98:
 | M5 | Hierarchical Chunking | Done |
 | M6 | Indexing | Done |
 | M7 | Retrieval | Done |
-| M8 | Reranking | Not Started |
+| M8 | Reranking | Done |
 | M9 | LLM Integration | Not Started |
 | M10 | Verification + Citation | Not Started |
 | M11 | Chat UI | Not Started |

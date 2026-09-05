@@ -23,6 +23,10 @@ class RetrievedChunk(BaseModel):
     page_end: int
     sequence_number: int
     score: float | None
+    # M8's parent expansion (spec §23) needs these to decide whether a chunk
+    # is a small enough fragment to warrant pulling in its parent's text.
+    parent_chunk_id: uuid.UUID | None
+    token_count: int
 
 
 class RetrievalResponse(BaseModel):

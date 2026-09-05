@@ -233,4 +233,6 @@ class RetrievalService:
             page_end=chunk.page_end,
             sequence_number=chunk.sequence_number,
             score=score,
+            parent_chunk_id=chunk.parent_chunk_id,
+            token_count=chunk.token_count,
         )
