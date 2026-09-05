@@ -46,11 +46,11 @@ Per `docs/MASTER_DEVELOPMENT_SPEC.md` §98:
 | M0 | Foundation (monorepo, Next.js, FastAPI, Postgres, Redis, Qdrant, MinIO, Docker Compose, config, logging, health checks, test foundation) | Done |
 | M1 | Authentication + Multi-Tenant | Done |
 | M2 | Document Upload + Storage | Done |
-| M3 | Generic Document Parsing — region-based, see [`ADR-014`](docs/adr/ADR-014-region-based-generic-structure.md) | Not Started |
-| M4 | Regulatory Structure — region-based, see [`ADR-014`](docs/adr/ADR-014-region-based-generic-structure.md) | Not Started |
-| M5 | Hierarchical Chunking | Not Started |
-| M6 | Indexing | Not Started |
-| M7 | Retrieval | Not Started |
+| M3 | Generic Document Parsing — region-based, see [`ADR-014`](docs/adr/ADR-014-region-based-generic-structure.md) | Done |
+| M4 | Regulatory Structure — region-based, see [`ADR-014`](docs/adr/ADR-014-region-based-generic-structure.md) | Done |
+| M5 | Hierarchical Chunking | Done |
+| M6 | Indexing | Done |
+| M7 | Retrieval | Done |
 | M8 | Reranking | Not Started |
 | M9 | LLM Integration | Not Started |
 | M10 | Verification + Citation | Not Started |

@@ -1,7 +1,7 @@
-"""apps/api's only Qdrant touchpoint for M6: cleaning up a deleted
-document's points (ADR-002's Consequences explicitly disallow stale Qdrant
-points). Query-time retrieval is M7 and will live here too, but is not
-implemented yet.
+"""apps/api's Qdrant touchpoints: M6's cleanup-on-delete (ADR-002's
+Consequences explicitly disallow stale Qdrant points) and M7's query-time
+retrieval (app/retrieval/service.py), which reuses the collection/vector
+name constants below to stay in sync with the worker's qdrant_writer.py.
 """
 
 import uuid
@@ -11,6 +11,8 @@ from qdrant_client import AsyncQdrantClient, models
 from app.core.config import settings
 
 COLLECTION_NAME = "document_chunks"
+DENSE_VECTOR_NAME = "dense"
+SPARSE_VECTOR_NAME = "sparse"
 
 
 def get_qdrant_client() -> AsyncQdrantClient:

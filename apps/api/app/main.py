@@ -13,6 +13,7 @@ from app.ingestion.router import router as ingestion_router
 from app.knowledge.router import router as knowledge_router
 from app.organizations.router import router as organizations_router
 from app.parsing.router import router as parsing_router
+from app.retrieval.router import router as retrieval_router
 
 
 def create_app() -> FastAPI:
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(documents_router)
     app.include_router(parsing_router)
     app.include_router(ingestion_router)
+    app.include_router(retrieval_router)
 
     return app
 

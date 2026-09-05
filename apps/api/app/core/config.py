@@ -40,11 +40,19 @@ class Settings(BaseSettings):
     VOYAGE_API_KEY: str = ""
     EMBEDDING_MODEL: str = "voyage-context-4"
     RERANK_MODEL: str = "rerank-2.5-lite"
+    # (added, M7) mirrors workers/document_worker's config — apps/api now
+    # calls Voyage itself for query-time embedding (this repo's existing
+    # hand-synced-config pattern, see that config.py's own comment).
+    VOYAGE_EMBEDDING_DIMENSION: int = 1024
 
     # RETRIEVAL
     DENSE_TOP_K: int = 30
     SPARSE_TOP_K: int = 30
     RERANK_TOP_K: int = 6
+    # (added, M7) size of the RRF-fused candidate list M7 hands to M8's
+    # conditional reranker — distinct from DENSE_TOP_K/SPARSE_TOP_K (each
+    # arm's own retrieval depth) and RERANK_TOP_K (M8's final evidence count).
+    FUSION_TOP_K: int = 20
 
     # FILE
     MAX_FILE_SIZE_MB: int = 50
