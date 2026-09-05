@@ -4,20 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.auth.dependencies import require_role
-from app.core.config import settings
 from app.llm.exceptions import LLMProviderUnavailable
 from app.llm.gateway import LLMGateway
-from app.llm.model_router import ModelTier, choose_model_tier
+from app.llm.model_router import ModelTier, choose_model_tier, select_model_for_tier
 from app.llm.schemas import GenerateRequest, GenerateResponse
 from app.organizations.models import OrganizationMember, OrgRole
 
 router = APIRouter(prefix="/llm", tags=["llm"])
-
-
-def _select_model(tier: ModelTier) -> tuple[str, str]:
-    if tier == "STRONG":
-        return settings.LLM_STRONG_MODEL, settings.LLM_STRONG_FALLBACK
-    return settings.LLM_FAST_MODEL, settings.LLM_FAST_FALLBACK
 
 
 def _resolve_tier(body: GenerateRequest) -> ModelTier:
@@ -42,7 +35,7 @@ async def generate(
     ),
 ) -> GenerateResponse:
     tier = _resolve_tier(body)
-    model, fallback_model = _select_model(tier)
+    model, fallback_model = select_model_for_tier(tier)
 
     gateway = LLMGateway()
     try:
@@ -65,7 +58,7 @@ async def generate_stream(
     ),
 ) -> StreamingResponse:
     tier = _resolve_tier(body)
-    model, _fallback_model = _select_model(tier)
+    model, _fallback_model = select_model_for_tier(tier)
     gateway = LLMGateway()
 
     async def event_stream() -> AsyncIterator[str]:

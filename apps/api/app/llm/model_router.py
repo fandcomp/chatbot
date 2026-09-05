@@ -11,6 +11,8 @@ all; this only decides which one.
 import re
 from typing import Literal
 
+from app.core.config import settings
+
 ModelTier = Literal["FAST", "STRONG"]
 
 _COMPARISON_RE = re.compile(
@@ -38,3 +40,13 @@ def choose_model_tier(query: str, distinct_document_count: int) -> ModelTier:
         return "STRONG"
 
     return "FAST"
+
+
+def select_model_for_tier(tier: ModelTier) -> tuple[str, str]:
+    """Returns (model, fallback_model) for the given tier — the single
+    place this mapping lives, shared by the M9 test endpoint and M10's
+    AnswerGenerationService.
+    """
+    if tier == "STRONG":
+        return settings.LLM_STRONG_MODEL, settings.LLM_STRONG_FALLBACK
+    return settings.LLM_FAST_MODEL, settings.LLM_FAST_FALLBACK

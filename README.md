@@ -53,7 +53,7 @@ Per `docs/MASTER_DEVELOPMENT_SPEC.md` §98:
 | M7 | Retrieval | Done |
 | M8 | Reranking | Done |
 | M9 | LLM Integration | Done |
-| M10 | Verification + Citation | Not Started |
+| M10 | Verification + Citation | Done |
 | M11 | Chat UI | Not Started |
 | M12 | Admin Document UI | Not Started |
 | M13 | Knowledge Versioning | Not Started |
