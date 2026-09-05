@@ -6,6 +6,7 @@ from slowapi.errors import RateLimitExceeded
 from app.api.health import router as health_router
 from app.auth.router import limiter
 from app.auth.router import router as auth_router
+from app.chat.router import router as chat_router
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.documents.router import router as documents_router
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(reranking_router)
     app.include_router(llm_router)
     app.include_router(verification_router)
+    app.include_router(chat_router)
 
     return app
 

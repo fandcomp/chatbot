@@ -16,9 +16,13 @@ class AnswerGenerationService:
         self._llm_gateway = llm_gateway or LLMGateway()
 
     async def generate_answer(
-        self, query: str, evidence: list[Evidence], tier: ModelTier
+        self,
+        query: str,
+        evidence: list[Evidence],
+        tier: ModelTier,
+        conversation_context: str | None = None,
     ) -> StructuredAnswer:
-        messages = build_messages(query, evidence)
+        messages = build_messages(query, evidence, conversation_context)
         model, fallback_model = select_model_for_tier(tier)
         result = await self._llm_gateway.generate_structured(
             messages=messages,

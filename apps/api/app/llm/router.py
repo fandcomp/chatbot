@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.auth.dependencies import require_role
+from app.core.sse import sse_event
 from app.llm.exceptions import LLMProviderUnavailable
 from app.llm.gateway import LLMGateway
 from app.llm.model_router import ModelTier, choose_model_tier, select_model_for_tier
@@ -18,13 +19,6 @@ def _resolve_tier(body: GenerateRequest) -> ModelTier:
     # (M10/M11 wire the real retrieval-derived document count) —
     # distinct_document_count defaults to 1 (single-document assumption).
     return body.complexity_hint or choose_model_tier(body.prompt, distinct_document_count=1)
-
-
-def _sse_event(text: str) -> str:
-    # A token delta could itself contain a newline — SSE requires each line
-    # of a multi-line payload to carry its own "data:" prefix.
-    lines = "\n".join(f"data: {line}" for line in text.split("\n"))
-    return f"{lines}\n\n"
 
 
 @router.post("/generate", response_model=GenerateResponse)
@@ -66,7 +60,7 @@ async def generate_stream(
             async for token in gateway.stream(
                 messages=[{"role": "user", "content": body.prompt}], model=model
             ):
-                yield _sse_event(token)
+                yield sse_event(token)
         except LLMProviderUnavailable as exc:
             yield f"event: error\ndata: {exc}\n\n"
 

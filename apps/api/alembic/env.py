@@ -12,6 +12,14 @@ from alembic import context
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.audit.models import AuditLog  # noqa: F401
+from app.chat.models import (  # noqa: F401
+    Chatbot,
+    ChatbotKnowledgeSpace,
+    Conversation,
+    ConversationSummary,
+    Message,
+    MessageSource,
+)
 from app.chunking.models import DocumentChunk  # noqa: F401
 from app.core.config import settings
 from app.core.database import Base

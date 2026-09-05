@@ -54,7 +54,7 @@ Per `docs/MASTER_DEVELOPMENT_SPEC.md` §98:
 | M8 | Reranking | Done |
 | M9 | LLM Integration | Done |
 | M10 | Verification + Citation | Done |
-| M11 | Chat UI | Not Started |
+| M11 | Chat UI | Backend done (conversations, session memory, `/chat`+`/chat/stream`); frontend UI not started |
 | M12 | Admin Document UI | Not Started |
 | M13 | Knowledge Versioning | Not Started |
 | M14 | Analytics | Not Started |
