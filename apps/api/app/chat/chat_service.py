@@ -12,11 +12,14 @@ docstring for why streaming can't use generate_structured directly).
 
 import asyncio
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.analytics.models import QueryLogSource
+from app.analytics.service import AnalyticsService
 from app.chat.inline_citation_parser import parse_inline_citations
 from app.chat.models import Conversation, MessageRole
 from app.chat.service import ConversationService
@@ -63,6 +66,7 @@ class ChatService:
         self._reranking = RerankingService(db)
         self._citations = AdaptiveCitationService(db)
         self._verification = ClaimVerificationService()
+        self._analytics = AnalyticsService(db)
 
     async def _gather_evidence(
         self, organization_id: uuid.UUID, query: str, knowledge_space_id: uuid.UUID | None
@@ -86,15 +90,18 @@ class ChatService:
         query: str,
         knowledge_space_id: uuid.UUID | None,
     ) -> tuple[uuid.UUID, AnswerResponse]:
+        turn_started = time.perf_counter()
         await self._conversations.set_title_if_unset(conversation, query)
         conversation_context = await self._conversations.build_conversation_context(
             conversation.id, settings.MAX_RECENT_MESSAGES
         )
         await self._conversations.append_message(conversation.id, MessageRole.USER, query)
 
+        retrieval_started = time.perf_counter()
         evidence_response = await self._gather_evidence(
             conversation.organization_id, query, knowledge_space_id
         )
+        retrieval_latency_ms = int((time.perf_counter() - retrieval_started) * 1000)
 
         if not evidence_response.evidence:
             answer_response = AnswerResponse(
@@ -113,6 +120,24 @@ class ChatService:
             message = await self._conversations.append_message(
                 conversation.id, MessageRole.ASSISTANT, answer_response.summary
             )
+            await self._analytics.log_query(
+                organization_id=conversation.organization_id,
+                user_id=conversation.user_id,
+                conversation_id=conversation.id,
+                source=QueryLogSource.CHAT,
+                query_text=query,
+                retrieval_mode=evidence_response.retrieval_mode,
+                reranked=evidence_response.reranked,
+                tier=None,
+                insufficient_evidence=True,
+                retrieved_source_count=0,
+                citation_count=0,
+                retrieval_latency_ms=retrieval_latency_ms,
+                llm_latency_ms=None,
+                total_latency_ms=int((time.perf_counter() - turn_started) * 1000),
+                input_tokens=None,
+                output_tokens=None,
+            )
             return message.id, answer_response
 
         distinct_document_count = len(
@@ -120,9 +145,12 @@ class ChatService:
         )
         tier = choose_model_tier(query, distinct_document_count)
 
-        structured_answer = await AnswerGenerationService(self._llm_gateway).generate_answer(
-            query, evidence_response.evidence, tier, conversation_context
-        )
+        llm_started = time.perf_counter()
+        structured_answer, usage = await AnswerGenerationService(
+            self._llm_gateway
+        ).generate_answer(query, evidence_response.evidence, tier, conversation_context)
+        llm_latency_ms = int((time.perf_counter() - llm_started) * 1000)
+
         verified_claims = self._verification.verify(
             structured_answer.claims, evidence_response.evidence
         )
@@ -148,6 +176,24 @@ class ChatService:
             structured_answer=structured_answer.model_dump(mode="json"),
             sources=_evidence_to_sources(evidence_response.evidence),
         )
+        await self._analytics.log_query(
+            organization_id=conversation.organization_id,
+            user_id=conversation.user_id,
+            conversation_id=conversation.id,
+            source=QueryLogSource.CHAT,
+            query_text=query,
+            retrieval_mode=evidence_response.retrieval_mode,
+            reranked=evidence_response.reranked,
+            tier=tier,
+            insufficient_evidence=structured_answer.insufficient_evidence,
+            retrieved_source_count=len(evidence_response.evidence),
+            citation_count=len(citations),
+            retrieval_latency_ms=retrieval_latency_ms,
+            llm_latency_ms=llm_latency_ms,
+            total_latency_ms=int((time.perf_counter() - turn_started) * 1000),
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+        )
         return message.id, answer_response
 
     async def stream_answer(
@@ -159,15 +205,18 @@ class ChatService:
         """Yields ("token", text) deltas, then a single ("sources", json)
         event once generation completes.
         """
+        turn_started = time.perf_counter()
         await self._conversations.set_title_if_unset(conversation, query)
         conversation_context = await self._conversations.build_conversation_context(
             conversation.id, settings.MAX_RECENT_MESSAGES
         )
         await self._conversations.append_message(conversation.id, MessageRole.USER, query)
 
+        retrieval_started = time.perf_counter()
         evidence_response = await self._gather_evidence(
             conversation.organization_id, query, knowledge_space_id
         )
+        retrieval_latency_ms = int((time.perf_counter() - retrieval_started) * 1000)
 
         if not evidence_response.evidence:
             yield "token", _INSUFFICIENT_EVIDENCE_MESSAGE
@@ -176,6 +225,24 @@ class ChatService:
             )
             yield "sources", json.dumps(
                 {"insufficient_evidence": True, "claims": [], "citations": {}}
+            )
+            await self._analytics.log_query(
+                organization_id=conversation.organization_id,
+                user_id=conversation.user_id,
+                conversation_id=conversation.id,
+                source=QueryLogSource.CHAT,
+                query_text=query,
+                retrieval_mode=evidence_response.retrieval_mode,
+                reranked=evidence_response.reranked,
+                tier=None,
+                insufficient_evidence=True,
+                retrieved_source_count=0,
+                citation_count=0,
+                retrieval_latency_ms=retrieval_latency_ms,
+                llm_latency_ms=None,
+                total_latency_ms=int((time.perf_counter() - turn_started) * 1000),
+                input_tokens=None,
+                output_tokens=None,
             )
             return
 
@@ -186,10 +253,12 @@ class ChatService:
         model, _fallback_model = select_model_for_tier(tier)
         messages = build_streaming_messages(query, evidence_response.evidence, conversation_context)
 
+        llm_started = time.perf_counter()
         full_text = ""
         async for token in self._llm_gateway.stream(messages=messages, model=model):
             full_text += token
             yield "token", token
+        llm_latency_ms = int((time.perf_counter() - llm_started) * 1000)
 
         claims = parse_inline_citations(full_text)
         verified_claims = self._verification.verify(claims, evidence_response.evidence)
@@ -211,4 +280,25 @@ class ChatService:
                     for source_id, citation in citations.items()
                 },
             }
+        )
+
+        # No token usage for the streaming path (see gateway.py's TokenUsage
+        # docstring) — input_tokens/output_tokens/estimated_cost log as null.
+        await self._analytics.log_query(
+            organization_id=conversation.organization_id,
+            user_id=conversation.user_id,
+            conversation_id=conversation.id,
+            source=QueryLogSource.CHAT,
+            query_text=query,
+            retrieval_mode=evidence_response.retrieval_mode,
+            reranked=evidence_response.reranked,
+            tier=tier,
+            insufficient_evidence=False,
+            retrieved_source_count=len(evidence_response.evidence),
+            citation_count=len(citations),
+            retrieval_latency_ms=retrieval_latency_ms,
+            llm_latency_ms=llm_latency_ms,
+            total_latency_ms=int((time.perf_counter() - turn_started) * 1000),
+            input_tokens=None,
+            output_tokens=None,
         )

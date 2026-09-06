@@ -6,7 +6,7 @@ after this, using the same Evidence this service was given.
 
 from app.llm.answer_schemas import StructuredAnswer
 from app.llm.context_builder import build_messages
-from app.llm.gateway import LLMGateway
+from app.llm.gateway import LLMGateway, TokenUsage
 from app.llm.model_router import ModelTier, select_model_for_tier
 from app.reranking.schemas import Evidence
 
@@ -21,13 +21,13 @@ class AnswerGenerationService:
         evidence: list[Evidence],
         tier: ModelTier,
         conversation_context: str | None = None,
-    ) -> StructuredAnswer:
+    ) -> tuple[StructuredAnswer, TokenUsage]:
         messages = build_messages(query, evidence, conversation_context)
         model, fallback_model = select_model_for_tier(tier)
-        result = await self._llm_gateway.generate_structured(
+        result, usage = await self._llm_gateway.generate_structured(
             messages=messages,
             model=model,
             json_schema=StructuredAnswer.model_json_schema(),
             fallback_model=fallback_model,
         )
-        return StructuredAnswer.model_validate(result)
+        return StructuredAnswer.model_validate(result), usage

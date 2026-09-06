@@ -29,7 +29,8 @@ REGISTER_PAYLOAD = {
 
 def _completion(payload: dict) -> SimpleNamespace:
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))]
+        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(payload)))],
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=20),
     )
 
 

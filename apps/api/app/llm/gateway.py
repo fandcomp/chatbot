@@ -8,6 +8,7 @@ second client.
 
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 from huggingface_hub import AsyncInferenceClient
@@ -22,6 +23,19 @@ from app.llm.exceptions import LLMProviderUnavailable
 logger = get_logger(__name__)
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    """M14 (spec §92) needs input/output token counts for cost tracking —
+    HF's non-streaming ChatCompletionOutput always carries `usage`
+    (unlike the streaming path, which only includes it when
+    stream_options.include_usage is set — not used here, so streamed
+    answers log with unknown usage rather than adding that complexity).
+    """
+
+    input_tokens: int
+    output_tokens: int
+
+
 class LLMGateway:
     def __init__(self) -> None:
         self._client = AsyncInferenceClient(
@@ -34,7 +48,7 @@ class LLMGateway:
 
     async def generate_structured(
         self, messages: list[dict], model: str, json_schema: dict, fallback_model: str = ""
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], TokenUsage]:
         response_format = {
             "type": "json_schema",
             "json_schema": {"name": "response", "schema": json_schema},
@@ -43,7 +57,10 @@ class LLMGateway:
             messages, model, fallback_model, response_format=response_format
         )
         content = result.choices[0].message.content or "{}"
-        return json.loads(content)
+        usage = TokenUsage(
+            input_tokens=result.usage.prompt_tokens, output_tokens=result.usage.completion_tokens
+        )
+        return json.loads(content), usage
 
     async def stream(self, messages: list[dict], model: str) -> AsyncIterator[str]:
         # Streaming intentionally has no fallback: switching providers

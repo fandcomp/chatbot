@@ -92,7 +92,7 @@ async def answer(
 
     answer_service = AnswerGenerationService()
     try:
-        structured_answer = await answer_service.generate_answer(
+        structured_answer, _usage = await answer_service.generate_answer(
             body.query, evidence_response.evidence, tier
         )
     except LLMProviderUnavailable as exc:

@@ -129,4 +129,11 @@ async def test_knowledge(
     await get_org_scoped_document(db, body.document_id, membership.organization_id)
 
     service = TestKnowledgeService(db)
-    return await service.test(membership.organization_id, body.document_id, body.query)
+    response = await service.test(
+        membership.organization_id, membership.user_id, body.document_id, body.query
+    )
+    # M14: TestKnowledgeService.test() logs a QueryLog row via flush() only
+    # — without this commit it would be silently discarded when the request
+    # session closes.
+    await db.commit()
+    return response

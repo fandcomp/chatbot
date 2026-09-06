@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # hand-synced-config pattern, see that config.py's own comment).
     VOYAGE_EMBEDDING_DIMENSION: int = 1024
 
+    # ANALYTICS (added, M14) — rough per-tier cost estimate, not a precise
+    # HF Inference Providers billing reconciliation (that data isn't exposed
+    # anywhere this codebase can read yet).
+    LLM_FAST_COST_PER_1K_TOKENS: float = 0.0
+    LLM_STRONG_COST_PER_1K_TOKENS: float = 0.0
+
     # RETRIEVAL
     DENSE_TOP_K: int = 30
     SPARSE_TOP_K: int = 30

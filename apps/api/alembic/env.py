@@ -11,6 +11,7 @@ from alembic import context
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.analytics.models import Feedback, KnowledgeGap, QueryLog  # noqa: F401
 from app.audit.models import AuditLog  # noqa: F401
 from app.chat.models import (  # noqa: F401
     Chatbot,

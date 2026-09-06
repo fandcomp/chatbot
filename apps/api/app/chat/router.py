@@ -3,9 +3,10 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.analytics.models import Feedback, QueryLog
 from app.auth.dependencies import require_role
 from app.chat.chat_service import ChatService
 from app.chat.models import Conversation, ConversationSummary, Message, MessageSource
@@ -134,12 +135,21 @@ async def delete_conversation(
     # No ORM relationship() is declared between these models (this
     # codebase's established pattern, see documents/router.py's own
     # delete_document) — explicit child-first ordering via bulk Core
-    # deletes, since message_sources references messages.id.
+    # deletes, since message_sources/feedback reference messages.id.
     message_ids_subquery = select(Message.id).where(Message.conversation_id == conversation.id)
     await db.execute(delete(MessageSource).where(MessageSource.message_id.in_(message_ids_subquery)))
+    await db.execute(delete(Feedback).where(Feedback.message_id.in_(message_ids_subquery)))
     await db.execute(delete(Message).where(Message.conversation_id == conversation.id))
     await db.execute(
         delete(ConversationSummary).where(ConversationSummary.conversation_id == conversation.id)
+    )
+    # QueryLog is an analytics record (spec §62) that must survive the
+    # conversation it was logged against — null the reference instead of
+    # deleting the row, or overview/knowledge-gap history would be lost.
+    await db.execute(
+        update(QueryLog)
+        .where(QueryLog.conversation_id == conversation.id)
+        .values(conversation_id=None)
     )
     await db.delete(conversation)
     await db.commit()

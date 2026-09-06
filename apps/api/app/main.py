@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from app.analytics.router import analytics_router, feedback_router
 from app.api.health import router as health_router
 from app.auth.router import limiter
 from app.auth.router import router as auth_router
@@ -53,6 +54,8 @@ def create_app() -> FastAPI:
     app.include_router(llm_router)
     app.include_router(verification_router)
     app.include_router(chat_router)
+    app.include_router(analytics_router)
+    app.include_router(feedback_router)
 
     return app
 

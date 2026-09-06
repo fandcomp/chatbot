@@ -57,7 +57,7 @@ Per `docs/MASTER_DEVELOPMENT_SPEC.md` §98:
 | M11 | Chat UI | Done (backend: conversations, session memory, `/chat`+`/chat/stream`; frontend: sidebar, streaming conversation view, composer, source drawer — PDF viewer/mobile polish/feedback deferred, see commit) |
 | M12 | Admin Document UI | Done (upload/status/review were already built in M2-M4; this milestone added Test Knowledge — `POST /knowledge/test`, document-scoped retrieval bypassing the ACTIVE filter, and the admin preview UI. Publish/archive/versioning deferred to M13, see commit) |
 | M13 | Knowledge Versioning | Core done: `POST /documents/{id}/versions` (new version for an existing document), auto-supersede on ACTIVE, `POST /documents/{id}/archive`, `document_relations` table (SUPERSEDED_BY auto-populated). Deferred: §20's separate legal-validity status, KnowledgeBaseVersion/rollback (design only, no ADR written yet) |
-| M14 | Analytics | Not Started |
+| M14 | Analytics | Core done (backend only): `QueryLog`/`KnowledgeGap`/`Feedback` tables, ChatService and TestKnowledgeService instrumented (latency, tokens, estimated cost), `GET /analytics/overview`, `GET /analytics/knowledge-gaps`, `POST /messages/{id}/feedback`. Deferred: `/analytics/questions`/`/analytics/sources` breakdown endpoints, precise HF Inference Providers cost reconciliation (rough per-tier estimate only), and the frontend analytics dashboard UI |
 | M15 | Production Hardening | Not Started |
 
 Per spec §107/§108: one milestone is implemented at a time, and work does not proceed to the next milestone automatically.
