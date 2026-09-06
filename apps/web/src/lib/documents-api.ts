@@ -1,4 +1,5 @@
 import { apiClient } from "@/lib/api-client";
+import type { Citation } from "@/lib/chat-schemas";
 
 export type KnowledgeSpace = {
   id: string;
@@ -175,6 +176,24 @@ export type ApprovalResult = {
   status: DocumentLifecycleStatus;
 };
 
+export type RetrievedSourcePreview = {
+  chunk_id: string;
+  structural_path_text: string | null;
+  original_text: string;
+  score: number | null;
+};
+
+export type TestKnowledgeResponse = {
+  question: string;
+  detected_intent: string;
+  retrieval_mode: "EXACT_STRUCTURAL" | "HYBRID";
+  retrieved_sources: RetrievedSourcePreview[];
+  answer: string;
+  insufficient_evidence: boolean;
+  reason_if_insufficient: string | null;
+  citations: Record<string, Citation>;
+};
+
 export const documentsApi = {
   listKnowledgeSpaces: () => apiClient.get<KnowledgeSpace[]>("/knowledge-spaces"),
   listDocuments: () => apiClient.get<DocumentItem[]>("/documents"),
@@ -195,6 +214,8 @@ export const documentsApi = {
     ),
   approveDocument: (documentId: string) =>
     apiClient.post<ApprovalResult>(`/documents/${documentId}/approve`),
+  testKnowledge: (documentId: string, query: string) =>
+    apiClient.post<TestKnowledgeResponse>("/knowledge/test", { document_id: documentId, query }),
 };
 
 export const ACTIVE_JOB_STATUSES: ProcessingJobStatus[] = ["QUEUED", "PROCESSING"];

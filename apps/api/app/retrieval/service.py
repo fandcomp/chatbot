@@ -52,14 +52,27 @@ class RetrievalService:
         organization_id: uuid.UUID,
         query: str,
         knowledge_space_id: uuid.UUID | None = None,
+        document_id: uuid.UUID | None = None,
     ) -> RetrievalResponse:
+        """`document_id` is M12's Test Knowledge escape hatch (spec §61: admin
+        must be able to test a document's quality "sebelum ACTIVE"): when set,
+        every query below scopes to that one document AND drops the
+        document_status == ACTIVE requirement entirely, since a document
+        being tested may still be APPROVED/INDEXING. Still always scoped by
+        organization_id — test mode never crosses tenants. The real chat path
+        never passes this.
+        """
         reference = parse_legal_reference(query)
         if reference is not None:
-            exact_chunks = await self._exact_match(organization_id, knowledge_space_id, reference)
+            exact_chunks = await self._exact_match(
+                organization_id, knowledge_space_id, reference, document_id
+            )
             if exact_chunks:
                 return RetrievalResponse(query=query, mode="EXACT_STRUCTURAL", chunks=exact_chunks)
 
-        hybrid_chunks = await self._hybrid_search(organization_id, knowledge_space_id, query)
+        hybrid_chunks = await self._hybrid_search(
+            organization_id, knowledge_space_id, query, document_id
+        )
         return RetrievalResponse(query=query, mode="HYBRID", chunks=hybrid_chunks)
 
     # -- Exact structural retrieval (spec §29.1, addendum §23) --------------
@@ -69,16 +82,18 @@ class RetrievalService:
         organization_id: uuid.UUID,
         knowledge_space_id: uuid.UUID | None,
         reference: LegalReference,
+        document_id: uuid.UUID | None = None,
     ) -> list[RetrievedChunk]:
         stmt = (
             select(DocumentChunk, DocumentNode)
             .join(DocumentNode, DocumentChunk.source_node_id == DocumentNode.id)
             .join(DocumentVersion, DocumentChunk.document_version_id == DocumentVersion.id)
-            .where(
-                DocumentChunk.organization_id == organization_id,
-                DocumentVersion.status == DocumentLifecycleStatus.ACTIVE,
-            )
+            .where(DocumentChunk.organization_id == organization_id)
         )
+        if document_id is not None:
+            stmt = stmt.where(DocumentChunk.document_id == document_id)
+        else:
+            stmt = stmt.where(DocumentVersion.status == DocumentLifecycleStatus.ACTIVE)
         if knowledge_space_id is not None:
             stmt = stmt.join(Document, DocumentChunk.document_id == Document.id).where(
                 Document.knowledge_space_id == knowledge_space_id
@@ -122,10 +137,11 @@ class RetrievalService:
         organization_id: uuid.UUID,
         knowledge_space_id: uuid.UUID | None,
         query: str,
+        document_id: uuid.UUID | None = None,
     ) -> list[RetrievedChunk]:
         dense_vector = await self._embedding_gateway.embed_query(query)
         sparse_indices, sparse_values = build_sparse_vector(query)
-        query_filter = self._tenant_filter(organization_id, knowledge_space_id)
+        query_filter = self._tenant_filter(organization_id, knowledge_space_id, document_id)
 
         client = get_qdrant_client()
         try:
@@ -165,7 +181,7 @@ class RetrievalService:
             return []
 
         return await self._fetch_verified_chunks(
-            organization_id, knowledge_space_id, fused_chunk_ids, scores
+            organization_id, knowledge_space_id, fused_chunk_ids, scores, document_id
         )
 
     async def _fetch_verified_chunks(
@@ -174,6 +190,7 @@ class RetrievalService:
         knowledge_space_id: uuid.UUID | None,
         chunk_ids: list[str],
         scores: dict[str, float],
+        document_id: uuid.UUID | None = None,
     ) -> list[RetrievedChunk]:
         stmt = (
             select(DocumentChunk)
@@ -181,9 +198,12 @@ class RetrievalService:
             .where(
                 DocumentChunk.id.in_([uuid.UUID(chunk_id) for chunk_id in chunk_ids]),
                 DocumentChunk.organization_id == organization_id,
-                DocumentVersion.status == DocumentLifecycleStatus.ACTIVE,
             )
         )
+        if document_id is not None:
+            stmt = stmt.where(DocumentChunk.document_id == document_id)
+        else:
+            stmt = stmt.where(DocumentVersion.status == DocumentLifecycleStatus.ACTIVE)
         if knowledge_space_id is not None:
             stmt = stmt.join(Document, DocumentChunk.document_id == Document.id).where(
                 Document.knowledge_space_id == knowledge_space_id
@@ -201,17 +221,28 @@ class RetrievalService:
 
     @staticmethod
     def _tenant_filter(
-        organization_id: uuid.UUID, knowledge_space_id: uuid.UUID | None
+        organization_id: uuid.UUID,
+        knowledge_space_id: uuid.UUID | None,
+        document_id: uuid.UUID | None = None,
     ) -> models.Filter:
         must: list[models.Condition] = [
             models.FieldCondition(
                 key="organization_id", match=models.MatchValue(value=str(organization_id))
             ),
-            models.FieldCondition(
-                key="document_status",
-                match=models.MatchValue(value=DocumentLifecycleStatus.ACTIVE.value),
-            ),
         ]
+        if document_id is not None:
+            must.append(
+                models.FieldCondition(
+                    key="document_id", match=models.MatchValue(value=str(document_id))
+                )
+            )
+        else:
+            must.append(
+                models.FieldCondition(
+                    key="document_status",
+                    match=models.MatchValue(value=DocumentLifecycleStatus.ACTIVE.value),
+                )
+            )
         if knowledge_space_id is not None:
             must.append(
                 models.FieldCondition(

@@ -12,6 +12,7 @@ from app.core.logging import configure_logging
 from app.documents.router import router as documents_router
 from app.ingestion.router import router as ingestion_router
 from app.knowledge.router import router as knowledge_router
+from app.knowledge.router import test_router as knowledge_test_router
 from app.llm.router import router as llm_router
 from app.organizations.router import router as organizations_router
 from app.parsing.router import router as parsing_router
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(organizations_router)
     app.include_router(knowledge_router)
+    app.include_router(knowledge_test_router)
     app.include_router(documents_router)
     app.include_router(parsing_router)
     app.include_router(ingestion_router)

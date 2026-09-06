@@ -7,11 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit.service import log_action
 from app.auth.dependencies import get_current_membership, require_role
 from app.core.database import get_db
+from app.documents.router import get_org_scoped_document
 from app.knowledge.models import KnowledgeSpace
-from app.knowledge.schemas import KnowledgeSpaceCreateRequest, KnowledgeSpacePublic
+from app.knowledge.schemas import (
+    KnowledgeSpaceCreateRequest,
+    KnowledgeSpacePublic,
+    TestKnowledgeRequest,
+    TestKnowledgeResponse,
+)
+from app.knowledge.test_service import TestKnowledgeService
 from app.organizations.models import OrganizationMember, OrgRole
 
 router = APIRouter(prefix="/knowledge-spaces", tags=["knowledge"])
+test_router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
 
 async def _get_org_scoped_space(
@@ -105,3 +113,20 @@ async def delete_knowledge_space(
         entity_id=space_id,
     )
     await db.commit()
+
+
+@test_router.post("/test", response_model=TestKnowledgeResponse)
+async def test_knowledge(
+    body: TestKnowledgeRequest,
+    membership: OrganizationMember = Depends(
+        require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> TestKnowledgeResponse:
+    # Confirms the document belongs to this admin's org before ever letting
+    # TestKnowledgeService bypass the ACTIVE filter for it — test mode must
+    # never become a way to probe another tenant's in-review documents.
+    await get_org_scoped_document(db, body.document_id, membership.organization_id)
+
+    service = TestKnowledgeService(db)
+    return await service.test(membership.organization_id, body.document_id, body.query)

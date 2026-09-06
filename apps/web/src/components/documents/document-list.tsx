@@ -8,10 +8,22 @@ import {
   ACTIVE_JOB_STATUSES,
   documentsApi,
   type DocumentItem,
+  type DocumentLifecycleStatus,
   type ProcessingJobStatus,
 } from "@/lib/documents-api";
 
 const POLL_INTERVAL_MS = 3000;
+
+// Chunking (M5) only ever runs once a version passes APPROVED, so Test
+// Knowledge (spec §61) has something to query starting there — it works
+// regardless of whether the document has reached ACTIVE yet.
+const TEST_KNOWLEDGE_STATUSES = new Set<DocumentLifecycleStatus>([
+  "APPROVED",
+  "INDEXING",
+  "ACTIVE",
+  "SUPERSEDED",
+  "ARCHIVED",
+]);
 
 type Props = {
   refreshToken: number;
@@ -108,9 +120,20 @@ export function DocumentList({ refreshToken }: Props) {
               <Button
                 variant="outline"
                 size="sm"
+                nativeButton={false}
                 render={<Link href={`/documents/${document.id}/structure`} />}
               >
                 Review structure
+              </Button>
+            )}
+            {TEST_KNOWLEDGE_STATUSES.has(document.latest_version_status) && (
+              <Button
+                variant="outline"
+                size="sm"
+                nativeButton={false}
+                render={<Link href={`/documents/${document.id}/test`} />}
+              >
+                Test Knowledge
               </Button>
             )}
             <Button variant="ghost" size="sm" onClick={() => void handleDelete(document.id)}>
