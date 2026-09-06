@@ -1,11 +1,12 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import log_action
 from app.auth.dependencies import get_current_membership, require_role
+from app.auth.router import limiter, user_or_ip_key
 from app.core.database import get_db
 from app.documents.router import get_org_scoped_document
 from app.knowledge.models import KnowledgeSpace
@@ -116,7 +117,9 @@ async def delete_knowledge_space(
 
 
 @test_router.post("/test", response_model=TestKnowledgeResponse)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def test_knowledge(
+    request: Request,
     body: TestKnowledgeRequest,
     membership: OrganizationMember = Depends(
         require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)

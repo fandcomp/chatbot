@@ -23,6 +23,9 @@ class AnalyticsOverview(BaseModel):
     # success", not raw counts.
     citation_coverage: float
     retrieval_success: float
+    # Fraction of CHAT turns served from the answer cache (spec §45/§47 rule
+    # 9) instead of running retrieval+LLM — see app/caching/answer_cache.py.
+    cache_hit_rate: float
     thumbs_up: int
     thumbs_down: int
 

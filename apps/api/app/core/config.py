@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # CHAT
     MAX_RECENT_MESSAGES: int = 8
     ENABLE_SEMANTIC_CACHE: bool = True
+    # M15 (spec §45/§47 rule 9) — exact-normalized-query answer cache, not
+    # true embedding-similarity semantic matching (see ADR-017). Bounds how
+    # stale a cached answer can be for invalidation paths this codebase
+    # can't reach synchronously (see ADR-017's worker-side gap).
+    ANSWER_CACHE_TTL_SECONDS: int = 600
 
     # PERFORMANCE
     LLM_REQUEST_TIMEOUT: int = 30

@@ -8,6 +8,13 @@ ClaimVerificationService/AdaptiveCitationService — the streaming path just
 gets its Claim list from app/chat/inline_citation_parser.py instead of
 generate_structured's JSON array (see app/llm/context_builder.py's module
 docstring for why streaming can't use generate_structured directly).
+
+`answer()` also checks AnswerCacheService on a conversation's first,
+org-wide (not knowledge-space-scoped) turn — see that module's docstring
+for the caching scope decisions (spec §45/§47 rule 9). `stream_answer()`
+deliberately does not: caching a token stream would mean replaying a
+stored string as if it were freshly generated, which adds meaningful
+complexity for a path that is already fast due to TTFT streaming.
 """
 
 import asyncio
@@ -20,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analytics.models import QueryLogSource
 from app.analytics.service import AnalyticsService
+from app.caching.answer_cache import AnswerCacheService
 from app.chat.inline_citation_parser import parse_inline_citations
 from app.chat.models import Conversation, MessageRole
 from app.chat.service import ConversationService
@@ -67,6 +75,7 @@ class ChatService:
         self._citations = AdaptiveCitationService(db)
         self._verification = ClaimVerificationService()
         self._analytics = AnalyticsService(db)
+        self._answer_cache = AnswerCacheService()
 
     async def _gather_evidence(
         self, organization_id: uuid.UUID, query: str, knowledge_space_id: uuid.UUID | None
@@ -96,6 +105,43 @@ class ChatService:
             conversation.id, settings.MAX_RECENT_MESSAGES
         )
         await self._conversations.append_message(conversation.id, MessageRole.USER, query)
+
+        # Answer cache (spec §45/§47 rule 9) only applies to a conversation's
+        # first turn — see AnswerCacheService's own docstring for why a
+        # context-free cache key can't safely serve a follow-up question.
+        if conversation_context is None and knowledge_space_id is None:
+            cached = await self._answer_cache.get(
+                conversation.organization_id, conversation.chatbot_id, query
+            )
+            if cached is not None:
+                cached_answer, cached_sources = cached
+                message = await self._conversations.append_message(
+                    conversation.id,
+                    MessageRole.ASSISTANT,
+                    cached_answer.summary,
+                    structured_answer=cached_answer.model_dump(mode="json"),
+                    sources=cached_sources,
+                )
+                await self._analytics.log_query(
+                    organization_id=conversation.organization_id,
+                    user_id=conversation.user_id,
+                    conversation_id=conversation.id,
+                    source=QueryLogSource.CHAT,
+                    query_text=query,
+                    retrieval_mode=cached_answer.retrieval_mode,
+                    reranked=cached_answer.reranked,
+                    tier=cached_answer.tier,
+                    insufficient_evidence=False,
+                    retrieved_source_count=len(cached_sources),
+                    citation_count=len(cached_answer.citations),
+                    retrieval_latency_ms=0,
+                    llm_latency_ms=0,
+                    total_latency_ms=int((time.perf_counter() - turn_started) * 1000),
+                    input_tokens=None,
+                    output_tokens=None,
+                    cache_hit=True,
+                )
+                return message.id, cached_answer
 
         retrieval_started = time.perf_counter()
         evidence_response = await self._gather_evidence(
@@ -194,6 +240,18 @@ class ChatService:
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
         )
+        if (
+            conversation_context is None
+            and knowledge_space_id is None
+            and not structured_answer.insufficient_evidence
+        ):
+            await self._answer_cache.set(
+                conversation.organization_id,
+                conversation.chatbot_id,
+                query,
+                answer_response,
+                _evidence_to_sources(evidence_response.evidence),
+            )
         return message.id, answer_response
 
     async def stream_answer(

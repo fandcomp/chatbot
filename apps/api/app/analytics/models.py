@@ -73,6 +73,9 @@ class QueryLog(Base):
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     estimated_cost_usd: Mapped[float | None] = mapped_column(Numeric(10, 6), nullable=True)
+    # M15: true when this turn was served by app/caching/answer_cache.py
+    # instead of running retrieval+LLM.
+    cache_hit: Mapped[bool] = mapped_column(nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

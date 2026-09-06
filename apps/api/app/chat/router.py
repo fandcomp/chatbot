@@ -1,13 +1,14 @@
 import uuid
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analytics.models import Feedback, QueryLog
 from app.auth.dependencies import require_role
+from app.auth.router import limiter, user_or_ip_key
 from app.chat.chat_service import ChatService
 from app.chat.models import Conversation, ConversationSummary, Message, MessageSource
 from app.chat.schemas import (
@@ -156,7 +157,9 @@ async def delete_conversation(
 
 
 @router.post("/chat", response_model=ChatResponse)
+@limiter.limit("30/minute", key_func=user_or_ip_key)
 async def chat(
+    request: Request,
     body: ChatRequest,
     membership: OrganizationMember = Depends(require_role(*_CHAT_ROLES)),
     db: AsyncSession = Depends(get_db),
@@ -185,7 +188,9 @@ async def chat(
 
 
 @router.post("/chat/stream")
+@limiter.limit("30/minute", key_func=user_or_ip_key)
 async def chat_stream(
+    request: Request,
     body: ChatRequest,
     membership: OrganizationMember = Depends(require_role(*_CHAT_ROLES)),
     db: AsyncSession = Depends(get_db),

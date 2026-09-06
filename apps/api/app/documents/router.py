@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import log_action
 from app.auth.dependencies import get_current_membership, require_role
+from app.caching.answer_cache import AnswerCacheService
 from app.chunking.models import DocumentChunk
 from app.core.database import get_db
 from app.core.storage import delete_object
@@ -122,6 +123,10 @@ async def archive_document(
     )
     await db.commit()
     await db.refresh(version)
+    # spec §45: cached answers must be invalidated when a document's status
+    # changes — an archived source should never keep serving a cached
+    # answer that cited it as ACTIVE.
+    await AnswerCacheService().invalidate_organization(membership.organization_id)
 
     return ArchiveResult(document_id=document.id, document_version_id=version.id, status=version.status)
 
@@ -205,3 +210,5 @@ async def delete_document(
         entity_id=document_id,
     )
     await db.commit()
+    # spec §57: deleting a document must also clear "cached answers".
+    await AnswerCacheService().invalidate_organization(membership.organization_id)

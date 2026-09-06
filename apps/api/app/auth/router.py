@@ -1,6 +1,7 @@
 import re
 import uuid
 
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -15,6 +16,7 @@ from app.core.database import get_db
 from app.core.security import (
     _DUMMY_HASH,
     create_access_token,
+    decode_access_token,
     hash_password,
     verify_password,
 )
@@ -25,6 +27,25 @@ from app.users.models import User
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 limiter = Limiter(key_func=get_remote_address, storage_uri=settings.REDIS_URL)
+
+
+def user_or_ip_key(request: Request) -> str:
+    """Rate-limit key for authenticated endpoints (spec §95: tenant/user/IP/
+    endpoint) — keys by user_id when a valid session cookie is present, so
+    users behind a shared office/NAT IP don't share one throttle budget, and
+    falls back to IP for anything else (never trusted for authorization —
+    the real auth dependency still runs and re-verifies independently).
+    """
+    token = request.cookies.get(settings.SESSION_COOKIE_NAME)
+    if token:
+        try:
+            payload = decode_access_token(token)
+        except jwt.PyJWTError:
+            payload = {}
+        user_id = payload.get("sub")
+        if user_id:
+            return f"user:{user_id}"
+    return get_remote_address(request)
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 

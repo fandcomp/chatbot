@@ -1,0 +1,18 @@
+[
+  {
+    "question": "Apa isi Pasal 5?",
+    "expected_document": "Undang-Undang Contoh",
+    "expected_article": "Pasal 5",
+    "expected_page": 1,
+    "expected_answer": "Setiap warga negara berhak atas pendidikan dasar.",
+    "expect_insufficient": false
+  },
+  {
+    "question": "Apa isi Pasal 999 yang tidak ada?",
+    "expected_document": null,
+    "expected_article": null,
+    "expected_page": null,
+    "expected_answer": null,
+    "expect_insufficient": true
+  }
+]

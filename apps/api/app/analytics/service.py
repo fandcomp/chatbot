@@ -18,16 +18,12 @@ from app.analytics.models import (
 )
 from app.analytics.schemas import AnalyticsOverview
 from app.core.config import settings
+from app.core.text import normalize_query_text
 
 _COST_PER_1K_TOKENS = {
     "FAST": settings.LLM_FAST_COST_PER_1K_TOKENS,
     "STRONG": settings.LLM_STRONG_COST_PER_1K_TOKENS,
 }
-_NORMALIZED_QUERY_MAX_LENGTH = 500
-
-
-def _normalize_query(query_text: str) -> str:
-    return " ".join(query_text.strip().lower().split())[:_NORMALIZED_QUERY_MAX_LENGTH]
 
 
 def _estimate_cost(
@@ -64,6 +60,7 @@ class AnalyticsService:
         total_latency_ms: int,
         input_tokens: int | None,
         output_tokens: int | None,
+        cache_hit: bool = False,
     ) -> None:
         self._db.add(
             QueryLog(
@@ -84,6 +81,7 @@ class AnalyticsService:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 estimated_cost_usd=_estimate_cost(tier, input_tokens, output_tokens),
+                cache_hit=cache_hit,
             )
         )
         if insufficient_evidence:
@@ -91,7 +89,7 @@ class AnalyticsService:
         await self._db.flush()
 
     async def _record_knowledge_gap(self, organization_id: uuid.UUID, query_text: str) -> None:
-        normalized = _normalize_query(query_text)
+        normalized = normalize_query_text(query_text)
         now = datetime.now(UTC)
         existing = (
             await self._db.execute(
@@ -140,6 +138,7 @@ class AnalyticsService:
                     func.avg(QueryLog.estimated_cost_usd),
                     func.sum(case((QueryLog.citation_count > 0, 1), else_=0)),
                     func.sum(case((QueryLog.retrieved_source_count > 0, 1), else_=0)),
+                    func.sum(case((QueryLog.cache_hit.is_(True), 1), else_=0)),
                 ).where(
                     QueryLog.organization_id == organization_id,
                     QueryLog.source == QueryLogSource.CHAT,
@@ -155,6 +154,7 @@ class AnalyticsService:
             avg_cost_usd,
             citation_hits,
             retrieval_hits,
+            cache_hits,
         ) = totals
 
         feedback_rows = (
@@ -176,6 +176,7 @@ class AnalyticsService:
             avg_cost_usd=float(avg_cost_usd) if avg_cost_usd is not None else None,
             citation_coverage=(citation_hits or 0) / total_questions if total_questions else 0.0,
             retrieval_success=(retrieval_hits or 0) / total_questions if total_questions else 0.0,
+            cache_hit_rate=(cache_hits or 0) / total_questions if total_questions else 0.0,
             thumbs_up=feedback_by_rating.get(FeedbackRating.THUMBS_UP, 0),
             thumbs_down=feedback_by_rating.get(FeedbackRating.THUMBS_DOWN, 0),
         )
