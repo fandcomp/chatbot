@@ -184,6 +184,47 @@ async def test_knowledge_test_turn_writes_a_query_log_with_test_knowledge_source
     assert overview["total_questions"] == 0
 
 
+async def test_owner_can_read_top_questions_and_top_documents(client_factory) -> None:
+    # Arrange
+    client, ks_id = await _register(client_factory)
+    document_id = await _seed_article(ks_id)
+    with patch("app.llm.gateway.AsyncInferenceClient") as mock_client_cls:
+        mock_client_cls.return_value.chat_completion = AsyncMock(
+            return_value=_completion(_STRUCTURED_ANSWER)
+        )
+        await client.post("/chat", json={"query": "Apa isi Pasal 5?"})
+
+    # Act
+    questions_response = await client.get("/analytics/questions")
+    sources_response = await client.get("/analytics/sources")
+
+    # Assert
+    assert questions_response.status_code == 200
+    questions_body = questions_response.json()
+    assert len(questions_body) == 1
+    assert questions_body[0]["query"] == "Apa isi Pasal 5?"
+    assert questions_body[0]["frequency"] == 1
+    assert sources_response.status_code == 200
+    body = sources_response.json()
+    assert body[0]["document_id"] == str(document_id)
+    assert body[0]["citation_count"] == 1
+
+
+async def test_viewer_cannot_read_top_questions_or_top_documents(client_factory) -> None:
+    # Arrange
+    owner_client, viewer_client = client_factory(), client_factory()
+    await owner_client.post("/auth/register", json=REGISTER_PAYLOAD)
+    await _create_member(owner_client, "viewer2@analytics-endpoint.io", "VIEWER")
+    await viewer_client.post(
+        "/auth/login",
+        json={"email": "viewer2@analytics-endpoint.io", "password": "supersecret123"},
+    )
+
+    # Act / Assert
+    assert (await viewer_client.get("/analytics/questions")).status_code == 403
+    assert (await viewer_client.get("/analytics/sources")).status_code == 403
+
+
 async def test_owner_can_read_overview_and_knowledge_gaps(client_factory) -> None:
     # Arrange
     client, ks_id = await _register(client_factory)

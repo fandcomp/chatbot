@@ -7,9 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.analytics.models import Feedback
 from app.analytics.schemas import (
     AnalyticsOverview,
+    DocumentMentionPublic,
     FeedbackPublic,
     FeedbackRequest,
     KnowledgeGapPublic,
+    TopQuestionPublic,
 )
 from app.analytics.service import AnalyticsService
 from app.auth.dependencies import require_role
@@ -47,6 +49,30 @@ async def get_knowledge_gaps(
         )
         for gap in gaps
     ]
+
+
+@analytics_router.get("/questions", response_model=list[TopQuestionPublic])
+async def get_top_questions(
+    membership: OrganizationMember = Depends(require_role(*_ANALYTICS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> list[TopQuestionPublic]:
+    service = AnalyticsService(db)
+    questions = await service.list_top_questions(membership.organization_id)
+    return [
+        TopQuestionPublic(
+            query=q.sample_query_text, frequency=q.frequency, last_asked_at=q.last_asked_at
+        )
+        for q in questions
+    ]
+
+
+@analytics_router.get("/sources", response_model=list[DocumentMentionPublic])
+async def get_top_sources(
+    membership: OrganizationMember = Depends(require_role(*_ANALYTICS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> list[DocumentMentionPublic]:
+    service = AnalyticsService(db)
+    return await service.list_top_documents(membership.organization_id)
 
 
 @feedback_router.post("/messages/{message_id}/feedback", response_model=FeedbackPublic)

@@ -1,6 +1,6 @@
 "use client";
 
-import { FileTextIcon, LogOutIcon, PanelLeftIcon, PlusIcon } from "lucide-react";
+import { BarChart3Icon, FileTextIcon, LogOutIcon, PanelLeftIcon, PlusIcon } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -18,7 +18,11 @@ type Props = {
 
 export function Sidebar({ conversations, activeConversationId, onDeleteConversation }: Props) {
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const { logout } = useAuth();
+  const { state, logout } = useAuth();
+  // Analytics is an OWNER/ADMIN/EDITOR capability (matches the backend's own
+  // require_role check, app/analytics/router.py) — hiding the link for
+  // VIEWER is a UX nicety only, never the enforcement (the API still 403s).
+  const canSeeAnalytics = state.status === "authenticated" && state.role !== "VIEWER";
 
   if (isCollapsed) {
     return (
@@ -57,7 +61,7 @@ export function Sidebar({ conversations, activeConversationId, onDeleteConversat
         </Button>
       </div>
 
-      <div className="px-2 pt-2">
+      <div className="flex flex-col gap-1 px-2 pt-2">
         <Button
           variant="ghost"
           className="w-full justify-start gap-2"
@@ -67,6 +71,17 @@ export function Sidebar({ conversations, activeConversationId, onDeleteConversat
           <FileTextIcon className="size-4" />
           Documents
         </Button>
+        {canSeeAnalytics && (
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2"
+            nativeButton={false}
+            render={<Link href="/analytics" />}
+          >
+            <BarChart3Icon className="size-4" />
+            Analytics
+          </Button>
+        )}
       </div>
 
       <div className="mt-3 flex-1 overflow-y-auto px-2">

@@ -1,10 +1,13 @@
 """AnalyticsService (spec §90/§62-63) — writes QueryLog on every chat/test
 query, maintains the KnowledgeGap aggregate whenever a query goes
-unanswered, and computes the admin overview dashboard's numbers.
+unanswered (and QuestionFrequency for every CHAT query regardless of
+outcome, spec §63's "top topics"), and computes the admin dashboard's
+overview numbers, top documents, and top questions.
 """
 
 import uuid
 from datetime import UTC, datetime
+from typing import TypeVar
 
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,15 +18,20 @@ from app.analytics.models import (
     KnowledgeGap,
     QueryLog,
     QueryLogSource,
+    QuestionFrequency,
 )
-from app.analytics.schemas import AnalyticsOverview
+from app.analytics.schemas import AnalyticsOverview, DocumentMentionPublic
+from app.chat.models import Conversation, Message, MessageSource
 from app.core.config import settings
 from app.core.text import normalize_query_text
+from app.documents.models import Document
 
 _COST_PER_1K_TOKENS = {
     "FAST": settings.LLM_FAST_COST_PER_1K_TOKENS,
     "STRONG": settings.LLM_STRONG_COST_PER_1K_TOKENS,
 }
+
+_QueryFrequencyModel = TypeVar("_QueryFrequencyModel", KnowledgeGap, QuestionFrequency)
 
 
 def _estimate_cost(
@@ -84,18 +92,25 @@ class AnalyticsService:
                 cache_hit=cache_hit,
             )
         )
-        if insufficient_evidence:
-            await self._record_knowledge_gap(organization_id, query_text)
+        if source == QueryLogSource.CHAT:
+            await self._upsert_query_frequency(QuestionFrequency, organization_id, query_text)
+            if insufficient_evidence:
+                await self._upsert_query_frequency(KnowledgeGap, organization_id, query_text)
         await self._db.flush()
 
-    async def _record_knowledge_gap(self, organization_id: uuid.UUID, query_text: str) -> None:
+    async def _upsert_query_frequency(
+        self,
+        model: type[_QueryFrequencyModel],
+        organization_id: uuid.UUID,
+        query_text: str,
+    ) -> None:
         normalized = normalize_query_text(query_text)
         now = datetime.now(UTC)
         existing = (
             await self._db.execute(
-                select(KnowledgeGap).where(
-                    KnowledgeGap.organization_id == organization_id,
-                    KnowledgeGap.normalized_query == normalized,
+                select(model).where(
+                    model.organization_id == organization_id,
+                    model.normalized_query == normalized,
                 )
             )
         ).scalar_one_or_none()
@@ -104,7 +119,7 @@ class AnalyticsService:
             existing.last_asked_at = now
         else:
             self._db.add(
-                KnowledgeGap(
+                model(
                     organization_id=organization_id,
                     normalized_query=normalized,
                     sample_query_text=query_text,
@@ -123,6 +138,41 @@ class AnalyticsService:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def list_top_questions(
+        self, organization_id: uuid.UUID, limit: int = 20
+    ) -> list[QuestionFrequency]:
+        result = await self._db.execute(
+            select(QuestionFrequency)
+            .where(QuestionFrequency.organization_id == organization_id)
+            .order_by(QuestionFrequency.frequency.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_top_documents(
+        self, organization_id: uuid.UUID, limit: int = 20
+    ) -> list[DocumentMentionPublic]:
+        # Test Knowledge never persists a Message/MessageSource (it's a
+        # preview only, spec §61) — joining through Conversation naturally
+        # excludes it, matching get_overview's own CHAT-only scope.
+        rows = (
+            await self._db.execute(
+                select(Document.id, Document.title, func.count(MessageSource.id))
+                .select_from(MessageSource)
+                .join(Message, MessageSource.message_id == Message.id)
+                .join(Conversation, Message.conversation_id == Conversation.id)
+                .join(Document, MessageSource.document_id == Document.id)
+                .where(Conversation.organization_id == organization_id)
+                .group_by(Document.id, Document.title)
+                .order_by(func.count(MessageSource.id).desc())
+                .limit(limit)
+            )
+        ).all()
+        return [
+            DocumentMentionPublic(document_id=row[0], document_title=row[1], citation_count=row[2])
+            for row in rows
+        ]
 
     async def get_overview(self, organization_id: uuid.UUID) -> AnalyticsOverview:
         # Test Knowledge traffic (admin previews) is deliberately excluded —

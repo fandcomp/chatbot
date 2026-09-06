@@ -17,11 +17,18 @@ from app.analytics.models import (
     QueryLogSource,
 )
 from app.analytics.service import AnalyticsService
-from app.chat.models import Conversation, Message, MessageRole
+from app.chat.models import Conversation, Message, MessageRole, MessageSource
 from app.chat.service import ConversationService
 from app.core.database import async_session_factory
 from app.organizations.models import Organization
+from app.parsing.models import DocumentNodeType
 from app.users.models import User
+
+from ..integration._retrieval_fixtures import (
+    resolve_organization_id,
+    seed_active_document,
+    seed_node_and_chunk,
+)
 
 REGISTER_PAYLOAD = {
     "organization_name": "Analytics Test Org",
@@ -39,6 +46,17 @@ async def _register(client_factory):
         user = (await db.execute(User.__table__.select())).mappings().first()
         user_id = user["id"]
     return organization_id, user_id
+
+
+async def _register_with_knowledge_space(client_factory):
+    client = client_factory()
+    await client.post("/auth/register", json=REGISTER_PAYLOAD)
+    ks_id = (await client.get("/knowledge-spaces")).json()[0]["id"]
+    async with async_session_factory() as db:
+        organization_id = await resolve_organization_id(db, ks_id)
+        user = (await db.execute(User.__table__.select())).mappings().first()
+        user_id = user["id"]
+    return organization_id, user_id, ks_id
 
 
 async def _log(
@@ -227,6 +245,113 @@ async def test_get_overview_computes_feedback_counts(client_factory) -> None:
     # Assert
     assert overview.thumbs_up == 1
     assert overview.thumbs_down == 1
+
+
+async def test_every_chat_query_is_tracked_in_question_frequency_regardless_of_outcome(
+    client_factory,
+) -> None:
+    # Arrange — one answered question, one insufficient-evidence question;
+    # spec §63's "top topics" tracks both, unlike KnowledgeGap (§62).
+    organization_id, user_id = await _register(client_factory)
+
+    # Act
+    async with async_session_factory() as db:
+        service = AnalyticsService(db)
+        await _log(service, organization_id, user_id, insufficient_evidence=False)
+        await _log(
+            service, organization_id, user_id, insufficient_evidence=True,
+            query_text="Pertanyaan lain",
+        )
+        await db.commit()
+        questions = await service.list_top_questions(organization_id)
+
+    # Assert
+    assert {q.sample_query_text for q in questions} == {
+        "Apa isi Pasal 5?",
+        "Pertanyaan lain",
+    }
+
+
+async def test_test_knowledge_queries_are_not_tracked_in_question_frequency(
+    client_factory,
+) -> None:
+    # Arrange
+    organization_id, user_id = await _register(client_factory)
+
+    # Act
+    async with async_session_factory() as db:
+        service = AnalyticsService(db)
+        await _log(service, organization_id, user_id, source=QueryLogSource.TEST_KNOWLEDGE)
+        await db.commit()
+        questions = await service.list_top_questions(organization_id)
+
+    # Assert
+    assert questions == []
+
+
+async def _add_message_source(
+    db, conversation, document_id: uuid.UUID, chunk_id: uuid.UUID, source_label: str = "S1"
+) -> None:
+    message = Message(conversation_id=conversation.id, role=MessageRole.ASSISTANT, content="a")
+    db.add(message)
+    await db.flush()
+    db.add(
+        MessageSource(
+            message_id=message.id,
+            source_label=source_label,
+            chunk_id=chunk_id,
+            document_id=document_id,
+            structural_path_text="Pasal 5",
+            page_start=1,
+            page_end=1,
+        )
+    )
+    await db.flush()
+
+
+async def test_list_top_documents_counts_and_ranks_citations(client_factory) -> None:
+    # Arrange — document A cited twice, document B cited once. Real
+    # Document/DocumentChunk rows are required: MessageSource.chunk_id and
+    # .document_id are real foreign keys.
+    organization_id, user_id, ks_id = await _register_with_knowledge_space(client_factory)
+    async with async_session_factory() as db:
+        doc_a_id, version_a, region_a = await seed_active_document(db, organization_id, ks_id, title="Doc A")
+        _node_a, chunk_a = await seed_node_and_chunk(
+            db, organization_id, doc_a_id, version_a, region_a,
+            node_type=DocumentNodeType.ARTICLE, sequence_number=0,
+            original_text="Pasal 5", structural_path_json=[{"type": "ARTICLE", "label": "Pasal 5"}],
+            structural_path_text="Pasal 5", article_number="5",
+        )
+        doc_b_id, version_b, region_b = await seed_active_document(db, organization_id, ks_id, title="Doc B")
+        _node_b, chunk_b = await seed_node_and_chunk(
+            db, organization_id, doc_b_id, version_b, region_b,
+            node_type=DocumentNodeType.ARTICLE, sequence_number=0,
+            original_text="Pasal 6", structural_path_json=[{"type": "ARTICLE", "label": "Pasal 6"}],
+            structural_path_text="Pasal 6", article_number="6",
+        )
+
+        chatbot = await ConversationService(db).get_or_create_default_chatbot(organization_id)
+        conversation = Conversation(
+            organization_id=organization_id, chatbot_id=chatbot.id, user_id=user_id, title="t"
+        )
+        db.add(conversation)
+        await db.flush()
+
+        await _add_message_source(db, conversation, doc_a_id, chunk_a)
+        await _add_message_source(db, conversation, doc_a_id, chunk_a)
+        await _add_message_source(db, conversation, doc_b_id, chunk_b)
+        await db.commit()
+
+    # Act
+    async with async_session_factory() as db:
+        documents = await AnalyticsService(db).list_top_documents(organization_id)
+
+    # Assert
+    assert documents[0].document_id == doc_a_id
+    assert documents[0].citation_count == 2
+    assert documents[0].document_title == "Doc A"
+    assert documents[1].document_id == doc_b_id
+    assert documents[1].citation_count == 1
 
 
 async def test_list_knowledge_gaps_orders_by_frequency_descending(client_factory) -> None:

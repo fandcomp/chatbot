@@ -106,6 +106,33 @@ class KnowledgeGap(Base):
     )
 
 
+class QuestionFrequency(Base):
+    """spec §63 "top topics" — same normalized-query-upsert shape as
+    KnowledgeGap, but incremented on EVERY CHAT query regardless of
+    insufficient_evidence (KnowledgeGap only tracks the unanswered subset,
+    §62's distinct use case).
+    """
+
+    __tablename__ = "question_frequencies"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "normalized_query", name="uq_question_frequency"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+    )
+    normalized_query: Mapped[str] = mapped_column(String(500), nullable=False)
+    sample_query_text: Mapped[str] = mapped_column(Text, nullable=False)
+    frequency: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_asked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class Feedback(Base):
     """spec §75-76 — thumbs up/down on an assistant Message."""
 

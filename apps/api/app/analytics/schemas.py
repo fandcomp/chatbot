@@ -12,6 +12,18 @@ class KnowledgeGapPublic(BaseModel):
     last_asked_at: datetime
 
 
+class TopQuestionPublic(BaseModel):
+    query: str
+    frequency: int
+    last_asked_at: datetime
+
+
+class DocumentMentionPublic(BaseModel):
+    document_id: uuid.UUID
+    document_title: str
+    citation_count: int
+
+
 class AnalyticsOverview(BaseModel):
     total_questions: int
     answered: int
