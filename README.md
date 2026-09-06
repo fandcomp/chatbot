@@ -56,7 +56,7 @@ Per `docs/MASTER_DEVELOPMENT_SPEC.md` §98:
 | M10 | Verification + Citation | Done |
 | M11 | Chat UI | Done (backend: conversations, session memory, `/chat`+`/chat/stream`; frontend: sidebar, streaming conversation view, composer, source drawer — PDF viewer/mobile polish/feedback deferred, see commit) |
 | M12 | Admin Document UI | Done (upload/status/review were already built in M2-M4; this milestone added Test Knowledge — `POST /knowledge/test`, document-scoped retrieval bypassing the ACTIVE filter, and the admin preview UI. Publish/archive/versioning deferred to M13, see commit) |
-| M13 | Knowledge Versioning | Not Started |
+| M13 | Knowledge Versioning | Core done: `POST /documents/{id}/versions` (new version for an existing document), auto-supersede on ACTIVE, `POST /documents/{id}/archive`, `document_relations` table (SUPERSEDED_BY auto-populated). Deferred: §20's separate legal-validity status, KnowledgeBaseVersion/rollback (design only, no ADR written yet) |
 | M14 | Analytics | Not Started |
 | M15 | Production Hardening | Not Started |
 

@@ -95,3 +95,42 @@ class DocumentVersion(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class DocumentRelationType(str, enum.Enum):
+    """spec §21 — relational metadata between document versions, stored in
+    Postgres (never Neo4j/GraphRAG, per §101). M13's core slice only ever
+    auto-creates SUPERSEDED_BY (see the worker's index_document task); the
+    rest exist now so a future admin-curated-relations feature needs no
+    enum-alter migration.
+    """
+
+    AMENDS = "AMENDS"
+    REPEALS = "REPEALS"
+    REPLACES = "REPLACES"
+    IMPLEMENTS = "IMPLEMENTS"
+    REFERS_TO = "REFERS_TO"
+    SUPERSEDED_BY = "SUPERSEDED_BY"
+
+
+class DocumentRelation(Base):
+    __tablename__ = "document_relations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+    )
+    from_document_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("document_versions.id"), nullable=False
+    )
+    to_document_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("document_versions.id"), nullable=False
+    )
+    relation_type: Mapped[DocumentRelationType] = mapped_column(
+        SAEnum(DocumentRelationType, name="document_relation_type"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

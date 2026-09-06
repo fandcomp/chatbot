@@ -308,6 +308,31 @@ document_chunks = Table(
     Column("updated_at", DateTime(timezone=True)),
 )
 
+_document_relation_type = ENUM(
+    "AMENDS",
+    "REPEALS",
+    "REPLACES",
+    "IMPLEMENTS",
+    "REFERS_TO",
+    "SUPERSEDED_BY",
+    name="document_relation_type",
+    create_type=False,
+)
+
+# M13: index_document is the sole writer of the auto-generated SUPERSEDED_BY
+# relation (spec §21) — created the moment a new version reaches ACTIVE and
+# the document's previous ACTIVE version is flipped to SUPERSEDED.
+document_relations = Table(
+    "document_relations",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("organization_id", UUID(as_uuid=True)),
+    Column("from_document_version_id", UUID(as_uuid=True)),
+    Column("to_document_version_id", UUID(as_uuid=True)),
+    Column("relation_type", _document_relation_type),
+    Column("created_at", DateTime(timezone=True)),
+)
+
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with async_session_factory() as session:

@@ -217,6 +217,82 @@ async def test_index_document_embeds_chunks_and_upserts_points_and_marks_active(
         await _cleanup(seeded)
 
 
+async def _seed_prior_active_version(seeded: dict, old_version_id: uuid.UUID) -> None:
+    # version_number=0: _seed_document_version_and_job always hardcodes 1 for
+    # its own row (shared by many other tests in this file) — this must be
+    # some other number to avoid uq_document_version_number, not necessarily
+    # a realistic predecessor number.
+    async with async_session_factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO document_versions (id, organization_id, document_id, "
+                "version_number, file_hash, original_filename, mime_type, size_bytes, "
+                "storage_path, status) VALUES (:id, :org_id, :doc_id, 0, 'oldhash', "
+                "'old.pdf', 'application/pdf', 10, 'unused/old.pdf', 'ACTIVE')"
+            ),
+            {"id": old_version_id, "org_id": seeded["org_id"], "doc_id": seeded["document_id"]},
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_index_document_auto_supersedes_previous_active_version(seeded_document_version):
+    # M13: a new version reaching ACTIVE must flip the document's previous
+    # ACTIVE version to SUPERSEDED and record why (SUPERSEDED_BY).
+    seeded = seeded_document_version
+    old_version_id = uuid.uuid4()
+    await _seed_prior_active_version(seeded, old_version_id)
+    await _seed_document_version_and_job(seeded, status="INDEXING")
+    region_id = uuid.uuid4()
+    node_id = uuid.uuid4()
+    chunk_id = uuid.uuid4()
+    await _seed_region(seeded, region_id)
+    await _seed_node(seeded, region_id, node_id)
+    await _seed_chunk(seeded, node_id, chunk_id)
+
+    fake_gateway = AsyncMock()
+    fake_gateway.embed_documents = AsyncMock(
+        return_value=[[0.1] * settings.VOYAGE_EMBEDDING_DIMENSION]
+    )
+
+    try:
+        with patch("app.tasks.EmbeddingGateway", return_value=fake_gateway):
+            await _index_document_async(str(seeded["job_id"]), attempts=1)
+
+        new_version = await _version_row(seeded["version_id"])
+        assert new_version["status"] == "ACTIVE"
+
+        old_version = await _version_row(old_version_id)
+        assert old_version["status"] == "SUPERSEDED"
+
+        async with async_session_factory() as session:
+            relation = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT relation_type FROM document_relations WHERE "
+                            "from_document_version_id = :old AND to_document_version_id = :new"
+                        ),
+                        {"old": old_version_id, "new": seeded["version_id"]},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert relation["relation_type"] == "SUPERSEDED_BY"
+    finally:
+        await _cleanup(seeded)
+        async with async_session_factory() as session:
+            await session.execute(
+                text("DELETE FROM document_relations WHERE to_document_version_id = :new"),
+                {"new": seeded["version_id"]},
+            )
+            await session.execute(
+                text("DELETE FROM document_versions WHERE id = :old"), {"old": old_version_id}
+            )
+            await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_index_document_fails_the_job_when_embedding_raises(seeded_document_version):
     seeded = seeded_document_version

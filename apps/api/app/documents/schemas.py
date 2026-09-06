@@ -14,3 +14,9 @@ class DocumentPublic(BaseModel):
     latest_version_status: DocumentLifecycleStatus
     latest_processing_job_id: uuid.UUID | None
     created_at: datetime
+
+
+class ArchiveResult(BaseModel):
+    document_id: uuid.UUID
+    document_version_id: uuid.UUID
+    status: DocumentLifecycleStatus

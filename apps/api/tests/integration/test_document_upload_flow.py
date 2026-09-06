@@ -20,7 +20,7 @@ from sqlalchemy import select
 from app.chunking.models import DocumentChunk
 from app.core.database import async_session_factory
 from app.documents import router as documents_router
-from app.documents.models import DocumentVersion
+from app.documents.models import DocumentLifecycleStatus, DocumentVersion
 from app.ingestion import router as ingestion_router
 from app.parsing.models import (
     DocumentNode,
@@ -358,6 +358,130 @@ async def test_delete_document_rolls_back_when_qdrant_cleanup_fails(
             )
         ).scalar_one_or_none()
         assert remaining_version is not None
+
+
+async def test_upload_new_version_creates_version_2_for_existing_document(
+    client: AsyncClient,
+) -> None:
+    # Arrange
+    space_id = await _register_and_get_space_id(client)
+    upload_response = await client.post(
+        "/documents/upload",
+        files={"file": ("report.pdf", _PDF_BYTES, "application/pdf")},
+        data={"knowledge_space_id": space_id},
+    )
+    document_id = upload_response.json()["document_id"]
+    new_content = _PDF_BYTES + b"\n%revised content"
+
+    # Act
+    response = await client.post(
+        f"/documents/{document_id}/versions",
+        files={"file": ("report-v2.pdf", new_content, "application/pdf")},
+    )
+
+    # Assert
+    assert response.status_code == 201
+    body = response.json()
+    assert body["document_id"] == document_id
+    async with async_session_factory() as session:
+        versions = (
+            await session.execute(
+                select(DocumentVersion).where(
+                    DocumentVersion.document_id == uuid.UUID(document_id)
+                )
+            )
+        ).scalars().all()
+    assert sorted(v.version_number for v in versions) == [1, 2]
+
+
+async def test_upload_new_version_for_unknown_document_returns_404(client: AsyncClient) -> None:
+    # Arrange
+    await client.post("/auth/register", json=REGISTER_PAYLOAD)
+
+    # Act
+    response = await client.post(
+        "/documents/00000000-0000-0000-0000-000000000000/versions",
+        files={"file": ("report.pdf", _PDF_BYTES, "application/pdf")},
+    )
+
+    # Assert
+    assert response.status_code == 404
+
+
+async def test_upload_new_version_with_duplicate_content_returns_409(
+    client: AsyncClient,
+) -> None:
+    # Arrange
+    space_id = await _register_and_get_space_id(client)
+    upload_response = await client.post(
+        "/documents/upload",
+        files={"file": ("report.pdf", _PDF_BYTES, "application/pdf")},
+        data={"knowledge_space_id": space_id},
+    )
+    document_id = upload_response.json()["document_id"]
+
+    # Act — identical bytes to v1.
+    response = await client.post(
+        f"/documents/{document_id}/versions",
+        files={"file": ("report-v2.pdf", _PDF_BYTES, "application/pdf")},
+    )
+
+    # Assert
+    assert response.status_code == 409
+
+
+async def test_archive_active_document_sets_status_archived(client: AsyncClient) -> None:
+    # Arrange
+    space_id = await _register_and_get_space_id(client)
+    upload_response = await client.post(
+        "/documents/upload",
+        files={"file": ("report.pdf", _PDF_BYTES, "application/pdf")},
+        data={"knowledge_space_id": space_id},
+    )
+    document_id = upload_response.json()["document_id"]
+    version_id = uuid.UUID(upload_response.json()["document_version_id"])
+
+    async with async_session_factory() as session:
+        version = (
+            await session.execute(select(DocumentVersion).where(DocumentVersion.id == version_id))
+        ).scalar_one()
+        version.status = DocumentLifecycleStatus.ACTIVE
+        await session.commit()
+
+    # Act
+    response = await client.post(f"/documents/{document_id}/archive")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json()["status"] == "ARCHIVED"
+
+
+async def test_archive_non_active_document_returns_409(client: AsyncClient) -> None:
+    # Arrange — freshly uploaded, still UPLOADED (not ACTIVE).
+    space_id = await _register_and_get_space_id(client)
+    upload_response = await client.post(
+        "/documents/upload",
+        files={"file": ("report.pdf", _PDF_BYTES, "application/pdf")},
+        data={"knowledge_space_id": space_id},
+    )
+    document_id = upload_response.json()["document_id"]
+
+    # Act
+    response = await client.post(f"/documents/{document_id}/archive")
+
+    # Assert
+    assert response.status_code == 409
+
+
+async def test_archive_unknown_document_returns_404(client: AsyncClient) -> None:
+    # Arrange
+    await client.post("/auth/register", json=REGISTER_PAYLOAD)
+
+    # Act
+    response = await client.post("/documents/00000000-0000-0000-0000-000000000000/archive")
+
+    # Assert
+    assert response.status_code == 404
 
 
 async def test_upload_with_unknown_knowledge_space_returns_404(client: AsyncClient) -> None:

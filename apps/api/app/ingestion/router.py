@@ -29,28 +29,15 @@ from app.organizations.models import OrganizationMember, OrgRole
 router = APIRouter(tags=["ingestion"])
 
 
-@router.post(
-    "/documents/upload", response_model=UploadResponse, status_code=status.HTTP_201_CREATED
-)
-@limiter.limit("20/minute")
-async def upload_document(
-    request: Request,
+async def _validate_and_store_upload(
+    db: AsyncSession,
+    membership: OrganizationMember,
     file: UploadFile,
-    knowledge_space_id: uuid.UUID = Form(...),
-    membership: OrganizationMember = Depends(
-        require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
-    ),
-    db: AsyncSession = Depends(get_db),
-) -> UploadResponse:
-    space_result = await db.execute(
-        select(KnowledgeSpace).where(
-            KnowledgeSpace.id == knowledge_space_id,
-            KnowledgeSpace.organization_id == membership.organization_id,
-        )
-    )
-    if space_result.scalar_one_or_none() is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge space not found")
-
+) -> tuple[str, str, bytes, str]:
+    """Shared by new-document and new-version upload: validate the file and
+    check for exact-duplicate content org-wide. Returns
+    (sanitized_filename, extension, content, file_hash).
+    """
     filename = file.filename or "upload"
     try:
         extension = validate_extension(filename)
@@ -75,21 +62,23 @@ async def upload_document(
             detail=f"Duplicate document — identical content already exists as document {duplicate_document_id}.",
         )
 
-    sanitized_filename = sanitize_filename(filename)
-    title = sanitized_filename.rsplit(".", 1)[0] or sanitized_filename
+    return sanitize_filename(filename), extension, content, file_hash
 
-    document = Document(
-        organization_id=membership.organization_id,
-        knowledge_space_id=knowledge_space_id,
-        title=title,
-    )
-    db.add(document)
-    await db.flush()
 
+async def _create_version_and_job(
+    db: AsyncSession,
+    membership: OrganizationMember,
+    document: Document,
+    version_number: int,
+    sanitized_filename: str,
+    extension: str,
+    content: bytes,
+    file_hash: str,
+) -> tuple[DocumentVersion, ProcessingJob]:
     version = DocumentVersion(
         organization_id=membership.organization_id,
         document_id=document.id,
-        version_number=1,
+        version_number=version_number,
         file_hash=file_hash,
         original_filename=sanitized_filename,
         mime_type=mime_type_for_extension(extension),
@@ -116,8 +105,49 @@ async def upload_document(
     # Write to S3 before committing: if this raises, the transaction never
     # commits and no orphaned DB rows are left pointing at a missing object.
     put_object(storage_key, content, mime_type_for_extension(extension))
-
     job.celery_task_id = enqueue_verify_upload(str(job.id))
+
+    return version, job
+
+
+@router.post(
+    "/documents/upload", response_model=UploadResponse, status_code=status.HTTP_201_CREATED
+)
+@limiter.limit("20/minute")
+async def upload_document(
+    request: Request,
+    file: UploadFile,
+    knowledge_space_id: uuid.UUID = Form(...),
+    membership: OrganizationMember = Depends(
+        require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> UploadResponse:
+    space_result = await db.execute(
+        select(KnowledgeSpace).where(
+            KnowledgeSpace.id == knowledge_space_id,
+            KnowledgeSpace.organization_id == membership.organization_id,
+        )
+    )
+    if space_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge space not found")
+
+    sanitized_filename, extension, content, file_hash = await _validate_and_store_upload(
+        db, membership, file
+    )
+    title = sanitized_filename.rsplit(".", 1)[0] or sanitized_filename
+
+    document = Document(
+        organization_id=membership.organization_id,
+        knowledge_space_id=knowledge_space_id,
+        title=title,
+    )
+    db.add(document)
+    await db.flush()
+
+    version, job = await _create_version_and_job(
+        db, membership, document, 1, sanitized_filename, extension, content, file_hash
+    )
 
     await log_action(
         db,
@@ -127,6 +157,83 @@ async def upload_document(
         entity_type="document",
         entity_id=document.id,
         new_value={"filename": sanitized_filename, "file_hash": file_hash},
+    )
+    await db.commit()
+
+    return UploadResponse(
+        document_id=document.id,
+        document_version_id=version.id,
+        processing_job_id=job.id,
+        status=version.status,
+    )
+
+
+@router.post(
+    "/documents/{document_id}/versions",
+    response_model=UploadResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+@limiter.limit("20/minute")
+async def upload_new_version(
+    request: Request,
+    document_id: uuid.UUID,
+    file: UploadFile,
+    membership: OrganizationMember = Depends(
+        require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> UploadResponse:
+    """spec §19: a new DocumentVersion for an EXISTING Document — the
+    missing link M13's core slice fills in. Once this version's processing
+    reaches ACTIVE, the worker's index_document task auto-supersedes
+    whichever version of this document was previously ACTIVE.
+    """
+    document = (
+        await db.execute(
+            select(Document).where(
+                Document.id == document_id,
+                Document.organization_id == membership.organization_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    latest_version_number = (
+        await db.execute(
+            select(DocumentVersion.version_number)
+            .where(DocumentVersion.document_id == document_id)
+            .order_by(DocumentVersion.version_number.desc())
+            .limit(1)
+        )
+    ).scalar_one()
+
+    sanitized_filename, extension, content, file_hash = await _validate_and_store_upload(
+        db, membership, file
+    )
+    version, job = await _create_version_and_job(
+        db,
+        membership,
+        document,
+        latest_version_number + 1,
+        sanitized_filename,
+        extension,
+        content,
+        file_hash,
+    )
+
+    await log_action(
+        db,
+        actor_id=membership.user_id,
+        organization_id=membership.organization_id,
+        action="document_version_upload",
+        entity_type="document",
+        entity_id=document.id,
+        new_value={
+            "filename": sanitized_filename,
+            "file_hash": file_hash,
+            "version_number": version.version_number,
+        },
     )
     await db.commit()
 

@@ -26,6 +26,7 @@ from app.database import (
     document_chunks,
     document_nodes,
     document_regions,
+    document_relations,
     document_structure_profiles,
     document_versions,
     documents,
@@ -747,6 +748,38 @@ async def _index_document_async(job_id: str, attempts: int) -> None:
             .where(document_versions.c.id == version_id)
             .values(status="ACTIVE", updated_at=now)
         )
+
+        # M13: auto-supersede — this document's previous ACTIVE version (if
+        # any) is no longer the current regulation now that this one is live.
+        # Correctness holds without touching Qdrant: M7's retrieval already
+        # re-verifies status live against Postgres on every query (that
+        # version's stale Qdrant points, if any, are excluded there).
+        superseded_version_ids = (
+            await session.execute(
+                select(document_versions.c.id).where(
+                    document_versions.c.document_id == version_row["document_id"],
+                    document_versions.c.id != version_id,
+                    document_versions.c.status == "ACTIVE",
+                )
+            )
+        ).scalars().all()
+        for old_version_id in superseded_version_ids:
+            await session.execute(
+                update(document_versions)
+                .where(document_versions.c.id == old_version_id)
+                .values(status="SUPERSEDED", updated_at=now)
+            )
+            await session.execute(
+                insert(document_relations).values(
+                    id=uuid.uuid4(),
+                    organization_id=version_row["organization_id"],
+                    from_document_version_id=old_version_id,
+                    to_document_version_id=version_id,
+                    relation_type="SUPERSEDED_BY",
+                    created_at=now,
+                )
+            )
+
         await session.commit()
 
 

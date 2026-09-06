@@ -176,6 +176,12 @@ export type ApprovalResult = {
   status: DocumentLifecycleStatus;
 };
 
+export type ArchiveResult = {
+  document_id: string;
+  document_version_id: string;
+  status: DocumentLifecycleStatus;
+};
+
 export type RetrievedSourcePreview = {
   chunk_id: string;
   structural_path_text: string | null;
@@ -216,6 +222,13 @@ export const documentsApi = {
     apiClient.post<ApprovalResult>(`/documents/${documentId}/approve`),
   testKnowledge: (documentId: string, query: string) =>
     apiClient.post<TestKnowledgeResponse>("/knowledge/test", { document_id: documentId, query }),
+  uploadNewVersion: (documentId: string, file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    return apiClient.upload<UploadResponse>(`/documents/${documentId}/versions`, formData);
+  },
+  archiveDocument: (documentId: string) =>
+    apiClient.post<ArchiveResult>(`/documents/${documentId}/archive`),
 };
 
 export const ACTIVE_JOB_STATUSES: ProcessingJobStatus[] = ["QUEUED", "PROCESSING"];

@@ -2,8 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import type { ChangeEvent } from "react";
 
 import { Button } from "@/components/ui/button";
+import { ApiError } from "@/lib/api-client";
 import {
   ACTIVE_JOB_STATUSES,
   documentsApi,
@@ -35,6 +37,9 @@ export function DocumentList({ refreshToken }: Props) {
     Record<string, ProcessingJobStatus>
   >({});
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const versionTargetId = useRef<string | null>(null);
+  const versionFileInput = useRef<HTMLInputElement>(null);
   const pollIntervals = useRef<Record<string, ReturnType<typeof setInterval>>>({});
   // Mirrors which documents' jobs have already reached a terminal status, so
   // the polling effect below can skip them without needing jobStatusOverrides
@@ -94,6 +99,36 @@ export function DocumentList({ refreshToken }: Props) {
     setDocuments((current) => current.filter((document) => document.id !== id));
   }
 
+  async function handleArchive(id: string) {
+    setError(null);
+    try {
+      await documentsApi.archiveDocument(id);
+      documentsApi.listDocuments().then(setDocuments).catch(() => undefined);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Archive failed");
+    }
+  }
+
+  function handleUploadNewVersionClick(id: string) {
+    versionTargetId.current = id;
+    versionFileInput.current?.click();
+  }
+
+  async function handleVersionFileSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    const documentId = versionTargetId.current;
+    event.target.value = "";
+    if (!file || !documentId) return;
+
+    setError(null);
+    try {
+      await documentsApi.uploadNewVersion(documentId, file);
+      documentsApi.listDocuments().then(setDocuments).catch(() => undefined);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Upload failed");
+    }
+  }
+
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading documents…</p>;
   }
@@ -103,45 +138,71 @@ export function DocumentList({ refreshToken }: Props) {
   }
 
   return (
-    <ul className="flex flex-col gap-2">
-      {documents.map((document) => (
-        <li
-          key={document.id}
-          className="flex items-center justify-between rounded-md border border-input px-4 py-3"
-        >
-          <div>
-            <p className="text-sm font-medium">{document.title}</p>
-            <p className="text-xs text-muted-foreground">
-              {jobStatusOverrides[document.id] ?? document.latest_version_status}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {document.latest_version_status === "REVIEW_REQUIRED" && (
+    <div className="flex flex-col gap-2">
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <input
+        ref={versionFileInput}
+        type="file"
+        accept=".pdf,.docx"
+        className="hidden"
+        onChange={(event) => void handleVersionFileSelected(event)}
+      />
+      <ul className="flex flex-col gap-2">
+        {documents.map((document) => (
+          <li
+            key={document.id}
+            className="flex items-center justify-between rounded-md border border-input px-4 py-3"
+          >
+            <div>
+              <p className="text-sm font-medium">{document.title}</p>
+              <p className="text-xs text-muted-foreground">
+                {jobStatusOverrides[document.id] ?? document.latest_version_status}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {document.latest_version_status === "REVIEW_REQUIRED" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  nativeButton={false}
+                  render={<Link href={`/documents/${document.id}/structure`} />}
+                >
+                  Review structure
+                </Button>
+              )}
+              {TEST_KNOWLEDGE_STATUSES.has(document.latest_version_status) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  nativeButton={false}
+                  render={<Link href={`/documents/${document.id}/test`} />}
+                >
+                  Test Knowledge
+                </Button>
+              )}
+              {document.latest_version_status === "ACTIVE" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleArchive(document.id)}
+                >
+                  Archive
+                </Button>
+              )}
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
-                nativeButton={false}
-                render={<Link href={`/documents/${document.id}/structure`} />}
+                onClick={() => handleUploadNewVersionClick(document.id)}
               >
-                Review structure
+                New version
               </Button>
-            )}
-            {TEST_KNOWLEDGE_STATUSES.has(document.latest_version_status) && (
-              <Button
-                variant="outline"
-                size="sm"
-                nativeButton={false}
-                render={<Link href={`/documents/${document.id}/test`} />}
-              >
-                Test Knowledge
+              <Button variant="ghost" size="sm" onClick={() => void handleDelete(document.id)}>
+                Delete
               </Button>
-            )}
-            <Button variant="ghost" size="sm" onClick={() => void handleDelete(document.id)}>
-              Delete
-            </Button>
-          </div>
-        </li>
-      ))}
-    </ul>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

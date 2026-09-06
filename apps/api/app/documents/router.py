@@ -9,8 +9,8 @@ from app.auth.dependencies import get_current_membership, require_role
 from app.chunking.models import DocumentChunk
 from app.core.database import get_db
 from app.core.storage import delete_object
-from app.documents.models import Document, DocumentVersion
-from app.documents.schemas import DocumentPublic
+from app.documents.models import Document, DocumentLifecycleStatus, DocumentVersion
+from app.documents.schemas import ArchiveResult, DocumentPublic
 from app.indexing.qdrant_client import delete_document_points
 from app.ingestion.models import ProcessingJob
 from app.organizations.models import OrganizationMember, OrgRole
@@ -87,6 +87,43 @@ async def get_document(
 ) -> DocumentPublic:
     document = await get_org_scoped_document(db, document_id, membership.organization_id)
     return await _to_document_public(db, document)
+
+
+@router.post("/{document_id}/archive", response_model=ArchiveResult)
+async def archive_document(
+    document_id: uuid.UUID,
+    membership: OrganizationMember = Depends(
+        require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> ArchiveResult:
+    """spec §9: ACTIVE -> ARCHIVED. Correctness needs no Qdrant cleanup — M7's
+    retrieval already re-verifies status live against Postgres on every
+    query, so a stale Qdrant point for this version is excluded there
+    regardless (same reasoning as the worker's auto-supersede logic, M13).
+    """
+    document = await get_org_scoped_document(db, document_id, membership.organization_id)
+    version = await latest_version(db, document.id)
+
+    if version.status != DocumentLifecycleStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an ACTIVE document can be archived.",
+        )
+
+    version.status = DocumentLifecycleStatus.ARCHIVED
+    await log_action(
+        db,
+        actor_id=membership.user_id,
+        organization_id=membership.organization_id,
+        action="document_archive",
+        entity_type="document_version",
+        entity_id=version.id,
+    )
+    await db.commit()
+    await db.refresh(version)
+
+    return ArchiveResult(document_id=document.id, document_version_id=version.id, status=version.status)
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
