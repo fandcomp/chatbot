@@ -39,6 +39,9 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-muted: var(--brand-muted);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -81,6 +84,12 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  /* Chat surface accent (M11) — reserved for interactive/active state only
+     (New Chat, active conversation, citation chips), never decorative, so
+     the neutral base still reads as the primary hierarchy. */
+  --brand: oklch(0.52 0.16 259);
+  --brand-foreground: oklch(0.98 0.01 259);
+  --brand-muted: oklch(0.94 0.03 259);
 }
 
 .dark {
@@ -115,6 +124,9 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  --brand: oklch(0.7 0.15 259);
+  --brand-foreground: oklch(0.145 0.02 259);
+  --brand-muted: oklch(0.3 0.05 259);
 }
 
 @layer base {

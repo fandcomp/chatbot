@@ -13,3 +13,7 @@ class Citation(BaseModel):
     structural_path_text: str | None
     page_start: int
     page_end: int
+    # A short excerpt of the immutable evidence/citation source text
+    # (addendum §24.1) — never contextual_text — for the source drawer (§73)
+    # to show without a second round-trip.
+    original_text_excerpt: str

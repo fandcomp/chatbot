@@ -8,7 +8,7 @@ export class ApiError extends Error {
   }
 }
 
-function apiUrl(path: string): string {
+export function apiUrl(path: string): string {
   const base = process.env.NEXT_PUBLIC_API_URL;
   if (!base) {
     throw new ApiError(0, "NEXT_PUBLIC_API_URL is not set");

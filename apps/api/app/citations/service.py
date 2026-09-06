@@ -14,6 +14,8 @@ from app.citations.schemas import Citation
 from app.documents.models import Document
 from app.reranking.schemas import Evidence
 
+_EXCERPT_MAX_CHARS = 500
+
 
 class AdaptiveCitationService:
     def __init__(self, db: AsyncSession) -> None:
@@ -29,6 +31,7 @@ class AdaptiveCitationService:
                 structural_path_text=item.structural_path_text,
                 page_start=item.page_start,
                 page_end=item.page_end,
+                original_text_excerpt=item.original_text[:_EXCERPT_MAX_CHARS],
             )
             for item in evidence
         }
