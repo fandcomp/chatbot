@@ -14,7 +14,7 @@ from typing import Any
 from app.interpretation.confidence import apply_confidence_adjustments
 from app.interpretation.document_profile import build_structure_profile
 from app.interpretation.models import InterpretedNode
-from app.interpretation.pattern_detector import detect_grammar
+from app.interpretation.pattern_detector import detect_grammar, split_into_grammar_segments
 from app.interpretation.specialized_interpreter import interpret_region
 from app.interpretation.structural_path import rebuild_structural_paths
 
@@ -62,8 +62,15 @@ def interpret_document(
 
     for region_nodes in nodes_by_region.values():
         ordered = _order_region_nodes(region_nodes)
-        grammar = detect_grammar(ordered)
-        interpret_region(ordered, grammar)
+        # A decision preamble and its Pasal-based body routinely share one
+        # region (see split_into_grammar_segments) — each segment gets its
+        # own grammar so the body doesn't inherit the preamble's, or vice
+        # versa. structural_path/confidence still run over the whole region
+        # in original order, since those recover hierarchy/sequence across
+        # the full node list regardless of which segment produced a node.
+        for segment in split_into_grammar_segments(ordered):
+            grammar = detect_grammar(segment)
+            interpret_region(segment, grammar)
         rebuild_structural_paths(ordered)
         apply_confidence_adjustments(ordered)
 

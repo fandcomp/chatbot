@@ -214,6 +214,65 @@ async def test_interpret_structure_retypes_nodes_and_marks_version_approved(
 
 
 @pytest.mark.asyncio
+async def test_interpret_structure_retypes_pasal_headers_even_with_decision_preamble_in_same_region(
+    seeded_document_version,
+):
+    # Regression: a real Peraturan's Menimbang/Mengingat/Memutuskan preamble
+    # and its Pasal-based body routinely land in the same StructuralRegion
+    # (region segmentation is page/keyword driven, not preamble-vs-body
+    # aware) — detect_grammar on the whole region used to resolve
+    # DECISION_BASED for everything, silently leaving every "Pasal N"
+    # header as a generic SECTION instead of ARTICLE.
+    seeded = seeded_document_version
+    await _seed_version_and_job(seeded, status="PARSED")
+    region_id = uuid.uuid4()
+    await _seed_region(seeded, region_id)
+    await _seed_nodes(
+        [
+            _node_values(
+                seeded, region_id, node_type="PARAGRAPH", text="Menimbang:", sequence_number=0
+            ),
+            _node_values(
+                seeded,
+                region_id,
+                node_type="PARAGRAPH",
+                text="Memutuskan: Menetapkan Peraturan...",
+                sequence_number=1,
+            ),
+            _node_values(
+                seeded,
+                region_id,
+                node_type="SECTION",
+                label="section_header",
+                text="Pasal 5",
+                depth=0,
+                sequence_number=2,
+            ),
+            _node_values(
+                seeded,
+                region_id,
+                node_type="PARAGRAPH",
+                text="Isi pasal contoh.",
+                depth=1,
+                sequence_number=3,
+            ),
+        ]
+    )
+
+    try:
+        with patch("app.tasks.chunk_document.delay"):
+            await _interpret_structure_async(str(seeded["job_id"]), attempts=1)
+
+        nodes = await _node_rows(seeded["version_id"])
+        pasal_node = next(node for node in nodes if node["text"] == "Pasal 5")
+        assert pasal_node["node_type"] == "ARTICLE"
+        assert pasal_node["article_number"] == "5"
+        assert pasal_node["structural_path_text"] == "Pasal 5"
+    finally:
+        await _cleanup(seeded["version_id"])
+
+
+@pytest.mark.asyncio
 async def test_interpret_structure_creates_a_new_job_and_chains_into_chunk_document_when_approved(
     seeded_document_version,
 ):
