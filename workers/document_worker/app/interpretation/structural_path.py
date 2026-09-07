@@ -14,7 +14,9 @@ from app.interpretation.models import InterpretedNode
 # Lower rank = higher (outer) in the hierarchy. A node type absent from this
 # map never pushes a new context level — it's a leaf that inherits whatever
 # context is currently on the stack (e.g. PARAGRAPH, TABLE, FIGURE).
-_LEVEL_RANK: dict[str, int] = {
+# Public: chunk_builder.py reuses this exact table to recover the same
+# hierarchy for chunk grouping — see its module docstring for why.
+LEVEL_RANK: dict[str, int] = {
     "CHAPTER": 0,
     "PART": 0,
     "ARTICLE": 1,
@@ -58,7 +60,7 @@ def rebuild_structural_paths(nodes_ordered: list[InterpretedNode]) -> None:
     stack: list[tuple[int, dict[str, str | None]]] = []
     for node in nodes_ordered:
         entry = _path_entry(node)
-        rank = _LEVEL_RANK.get(node.node_type)
+        rank = LEVEL_RANK.get(node.node_type)
         if rank is not None:
             while stack and stack[-1][0] >= rank:
                 stack.pop()

@@ -83,6 +83,42 @@ def test_an_oversized_clause_with_no_sub_items_gets_token_subdivided():
     assert "".join(p.original_text for p in overflow_pieces).count("Kalimat") == 4
 
 
+def test_article_and_its_flat_sibling_body_are_grouped_into_one_chunk_lineage():
+    # Regression: M3's Docling tree often leaves an ARTICLE header and its
+    # own body as flat siblings under one shared ancestor (a real,
+    # documented parsing limitation — see specialized_interpreter.py),
+    # rather than the body being a parent_id child of the ARTICLE. Without
+    # the rank-based regrouping, the body becomes its own disconnected,
+    # ARTICLE-less chunk and "Pasal 5" resolves to a chunk containing only
+    # its own two-word heading.
+    shared_ancestor_id = uuid.uuid4()
+    article = _node(
+        node_type="ARTICLE",
+        text="Pasal 5",
+        parent_id=shared_ancestor_id,
+        sequence_number=0,
+    )
+    body = _node(
+        node_type="PARAGRAPH",
+        text="Isi Pasal 5 yang sebenarnya.",
+        parent_id=shared_ancestor_id,
+        sequence_number=1,
+    )
+    next_article = _node(
+        node_type="ARTICLE",
+        text="Pasal 6",
+        parent_id=shared_ancestor_id,
+        sequence_number=2,
+    )
+
+    chunks = build_chunks([article, body, next_article])
+
+    pasal_5_chunk = next(c for c in chunks if c.original_text.startswith("Pasal 5"))
+    assert "Isi Pasal 5 yang sebenarnya." in pasal_5_chunk.original_text
+    pasal_6_chunk = next(c for c in chunks if c.parent_chunk_id is None and c.original_text == "Pasal 6")
+    assert pasal_6_chunk.id != pasal_5_chunk.id
+
+
 def test_table_nested_inside_article_becomes_its_own_separate_chunk():
     article = _node(node_type="ARTICLE", text="Pasal 4")
     clause = _node(node_type="CLAUSE", parent_id=article.id, text="isi singkat", sequence_number=0)

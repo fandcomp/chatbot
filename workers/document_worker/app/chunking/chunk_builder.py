@@ -5,6 +5,14 @@ Never hard-codes Article->Clause->Letter (addendum §20's principle, carried
 over from node hierarchy into chunk hierarchy too) — the recursion below
 only ever asks "does this node have structural children to recurse into?",
 never branches on a specific node_type chain.
+
+M3's Docling-derived tree is often flat where it should nest (documented in
+specialized_interpreter.py's module docstring: e.g. an ARTICLE header and
+its own body/clauses land as siblings under one shared ancestor, not
+parent-child) — `_regroup_flat_siblings` recovers the real nesting using
+the exact same rank-based stack `interpretation/structural_path.py` already
+uses for citation paths, so a chunk root actually contains its own body
+instead of that body becoming a disconnected, contentless sibling chunk.
 """
 
 import re
@@ -16,6 +24,7 @@ from typing import Any
 from app.chunking.models import ChunkSpec
 from app.chunking.text_estimator import estimate_tokens
 from app.core.config import settings
+from app.interpretation.structural_path import LEVEL_RANK
 
 # addendum §19's chunk roots, minus types with no concrete DocumentNodeType
 # (PROCEDURE_SECTION/APPENDIX_SECTION map onto NUMBERED_SECTION/APPENDIX —
@@ -64,14 +73,52 @@ class ChunkDraft:
     children: list["ChunkDraft"] = field(default_factory=list)
 
 
+def _regroup_flat_siblings(
+    siblings: list[ChunkableNode],
+) -> tuple[list[ChunkableNode], dict[uuid.UUID, list[ChunkableNode]]]:
+    """Re-nests one existing flat parent_id group using LEVEL_RANK, exactly
+    like structural_path.py's stack: a node with a rank closes out any
+    stacked sibling of equal-or-lower significance and becomes the new
+    context; anything after it (ranked or not) is reparented under it until
+    a later equal-or-higher-rank sibling takes over. A bucket with no
+    ranked node in it (tables, plain lists) round-trips unchanged — this
+    only ever changes behavior for groups that actually mix legal-structure
+    headers with flat body content.
+    """
+    top_level: list[ChunkableNode] = []
+    reparented: dict[uuid.UUID, list[ChunkableNode]] = defaultdict(list)
+    stack: list[tuple[int, ChunkableNode]] = []
+    for node in siblings:
+        rank = LEVEL_RANK.get(node.node_type)
+        if rank is not None:
+            while stack and stack[-1][0] >= rank:
+                stack.pop()
+        if stack:
+            reparented[stack[-1][1].id].append(node)
+        else:
+            top_level.append(node)
+        if rank is not None:
+            stack.append((rank, node))
+    return top_level, reparented
+
+
 def _children_by_parent(
     nodes: list[ChunkableNode],
 ) -> dict[uuid.UUID | None, list[ChunkableNode]]:
     node_ids = {node.id for node in nodes}
-    by_parent: dict[uuid.UUID | None, list[ChunkableNode]] = defaultdict(list)
+    raw_by_parent: dict[uuid.UUID | None, list[ChunkableNode]] = defaultdict(list)
     for node in nodes:
         parent_key = node.parent_id if node.parent_id in node_ids else None
-        by_parent[parent_key].append(node)
+        raw_by_parent[parent_key].append(node)
+    for children in raw_by_parent.values():
+        children.sort(key=lambda n: n.sequence_number)
+
+    by_parent: dict[uuid.UUID | None, list[ChunkableNode]] = defaultdict(list)
+    for parent_key, siblings in raw_by_parent.items():
+        top_level, reparented = _regroup_flat_siblings(siblings)
+        by_parent[parent_key].extend(top_level)
+        for anchor_id, children in reparented.items():
+            by_parent[anchor_id].extend(children)
     for children in by_parent.values():
         children.sort(key=lambda n: n.sequence_number)
     return by_parent
