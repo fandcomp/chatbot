@@ -22,5 +22,10 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // /api is excluded: those requests are proxied straight to the backend
+  // (see next.config.ts's rewrites) and must never be intercepted by this
+  // UX-only redirect — the backend's own get_current_user dependency is the
+  // real enforcement boundary for them, exactly as it is when the frontend
+  // calls the backend directly in non-proxied setups.
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
 };
