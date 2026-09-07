@@ -2,6 +2,7 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import voyageai.error as voyage_errors
 from qdrant_client import AsyncQdrantClient, models
 from sqlalchemy import insert, select, text
 
@@ -316,5 +317,41 @@ async def test_index_document_fails_the_job_when_embedding_raises(seeded_documen
 
         version = await _version_row(seeded["version_id"])
         assert version["status"] == "PROCESSING_FAILED"
+    finally:
+        await _cleanup(seeded)
+
+
+@pytest.mark.asyncio
+async def test_index_document_reraises_transient_voyage_errors_instead_of_failing(
+    seeded_document_version,
+):
+    # A rate-limit hit resolves on its own (Voyage's own error message says
+    # so) — the job must stay retryable (status PROCESSING, exception
+    # propagated for Celery's autoretry_for), never resolved to FAILED on the
+    # first hit.
+    seeded = seeded_document_version
+    await _seed_document_version_and_job(seeded, status="INDEXING")
+    region_id = uuid.uuid4()
+    node_id = uuid.uuid4()
+    chunk_id = uuid.uuid4()
+    await _seed_region(seeded, region_id)
+    await _seed_node(seeded, region_id, node_id)
+    await _seed_chunk(seeded, node_id, chunk_id)
+
+    fake_gateway = AsyncMock()
+    fake_gateway.embed_documents = AsyncMock(
+        side_effect=voyage_errors.RateLimitError("rate limited")
+    )
+
+    try:
+        with patch("app.tasks.EmbeddingGateway", return_value=fake_gateway):
+            with pytest.raises(voyage_errors.RateLimitError):
+                await _index_document_async(str(seeded["job_id"]), attempts=1)
+
+        job = await _job_row(seeded["job_id"])
+        assert job["status"] == "PROCESSING"
+
+        version = await _version_row(seeded["version_id"])
+        assert version["status"] == "INDEXING"
     finally:
         await _cleanup(seeded)

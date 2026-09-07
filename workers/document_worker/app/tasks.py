@@ -9,6 +9,7 @@ import hashlib
 import uuid
 from datetime import UTC, datetime
 
+import voyageai.error as voyage_errors
 from botocore.exceptions import (
     ClientError,
     ConnectionClosedError,
@@ -42,6 +43,18 @@ from app.storage import get_object_bytes
 # ClientError codes that mean the object genuinely won't be fetchable on
 # retry — anything else (throttling, transient 5xx) is treated as transient.
 _PERMANENT_S3_ERROR_CODES = {"NoSuchKey", "404", "AccessDenied", "NoSuchBucket"}
+
+# Voyage errors that resolve on their own (rate limits, transient network/5xx)
+# — these must reach Celery's autoretry_for, not resolve the job to FAILED on
+# the first hit. Auth/malformed-request errors never resolve on retry, so
+# they fall through to the generic except below.
+_TRANSIENT_VOYAGE_ERRORS = (
+    voyage_errors.RateLimitError,
+    voyage_errors.ServiceUnavailableError,
+    voyage_errors.APIConnectionError,
+    voyage_errors.Timeout,
+    voyage_errors.TryAgain,
+)
 
 
 async def _verify_upload_async(job_id: str, attempts: int) -> None:
@@ -720,6 +733,11 @@ async def _index_document_async(job_id: str, attempts: int) -> None:
                 dict(document_row),
                 EmbeddingGateway(),
             )
+        except _TRANSIENT_VOYAGE_ERRORS:
+            # Rate limit / transient network / 5xx — let Celery's
+            # autoretry_for retry with backoff instead of failing the job
+            # outright (the job stays at "PROCESSING", set above).
+            raise
         except Exception as exc:  # noqa: BLE001 - a Voyage API error (bad
             # request, malformed response) must resolve the job to FAILED,
             # not strand it at PROCESSING forever.
@@ -786,7 +804,7 @@ async def _index_document_async(job_id: str, attempts: int) -> None:
 @celery_app.task(
     bind=True,
     name="document_worker.index_document",
-    autoretry_for=(OSError, TimeoutError),
+    autoretry_for=(OSError, TimeoutError, *_TRANSIENT_VOYAGE_ERRORS),
     retry_backoff=True,
     retry_kwargs={"max_retries": 5},
 )
