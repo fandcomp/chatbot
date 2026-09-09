@@ -25,6 +25,7 @@ from app.chunking.pipeline import build_document_chunks
 from app.core.config import settings
 from app.database import (
     async_session_factory,
+    audit_logs,
     document_chunks,
     document_nodes,
     document_regions,
@@ -487,6 +488,24 @@ async def _interpret_structure_async(job_id: str, attempts: int) -> None:
                         document_version_id=version_id,
                         status="QUEUED",
                         attempts=0,
+                    )
+                )
+                # ADR-019: confidence-based auto-approval is an accepted,
+                # audited exception to manual document approval — every
+                # occurrence must leave a durable system-actor audit trail.
+                await session.execute(
+                    insert(audit_logs).values(
+                        id=uuid.uuid4(),
+                        actor_id=None,
+                        organization_id=organization_id,
+                        action="document_version.auto_approved",
+                        entity_type="document_version",
+                        entity_id=version_id,
+                        new_value={
+                            "confidence": result.aggregate_confidence,
+                            "threshold": settings.STRUCTURE_HIGH_CONFIDENCE,
+                        },
+                        created_at=now,
                     )
                 )
 

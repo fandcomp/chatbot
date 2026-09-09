@@ -430,6 +430,7 @@ stateDiagram-v2
     PROCESSING --> PARSED
     PROCESSING --> PROCESSING_FAILED
     PARSED --> REVIEW_REQUIRED
+    PARSED --> APPROVED: confidence >= STRUCTURE_HIGH_CONFIDENCE (ADR-019, audited)
     REVIEW_REQUIRED --> APPROVED
     APPROVED --> INDEXING
     INDEXING --> ACTIVE
@@ -439,6 +440,14 @@ stateDiagram-v2
     REVIEW_REQUIRED --> PROCESSING
     PROCESSING_FAILED --> PROCESSING
 ```
+
+`PARSED -> APPROVED` (skipping manual `REVIEW_REQUIRED`) only fires when M4's
+structural-interpretation confidence clears `STRUCTURE_HIGH_CONFIDENCE`
+*and* the version wasn't already flagged `REVIEW_REQUIRED` for an OCR-fallback
+reason (M3) — see ADR-019. This is an accepted, audited exception to manual
+approval, not a silent bypass: every occurrence writes an `audit_logs` row
+(`action = "document_version.auto_approved"`) so it is always distinguishable
+from a human-driven approval.
 
 Dokumen hanya boleh digunakan oleh chatbot jika:
 
@@ -3399,7 +3408,10 @@ Dilarang:
 - fixed-size chunking sebagai strategi utama,
 - semantic search saja,
 - regex saja,
-- upload langsung ACTIVE,
+- upload langsung ACTIVE (langsung dari UPLOADED, tanpa melalui structural
+  interpretation dan status APPROVED/INDEXING sama sekali — lihat ADR-019
+  untuk pengecualian confidence-gated auto-approval yang tetap melalui dan
+  mencatat status APPROVED secara resmi dan teraudit),
 - LLM membuat citation sendiri,
 - LLM menentukan legal status sendiri,
 - retrieval tanpa tenant filter,
@@ -3624,7 +3636,10 @@ Setiap coding agent atau developer yang mengerjakan project harus:
 6. Tidak menambah GraphRAG.
 7. Tidak mengganti RAG menjadi naive vector search.
 8. Tidak membuat citation berbasis generasi LLM.
-9. Tidak mem-bypass document approval.
+9. Tidak mem-bypass document approval (confidence-based auto-approval per
+   ADR-019 dikecualikan karena tetap melalui status APPROVED secara resmi
+   dan selalu tercatat di `audit_logs` — bukan bypass diam-diam; jangan
+   tambah jalur baru yang melompati APPROVED tanpa audit trail serupa).
 10. Tidak membuat provider-specific business logic.
 11. Menjaga compatibility dengan roadmap berikutnya.
 12. Mengutamakan correctness dibanding feature speed.

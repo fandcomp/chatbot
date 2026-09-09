@@ -7,6 +7,7 @@ from sqlalchemy import insert, select, text
 from app.core.config import settings
 from app.database import (
     async_session_factory,
+    audit_logs,
     document_nodes,
     document_regions,
     document_structure_profiles,
@@ -111,7 +112,28 @@ async def _cleanup(version_id: uuid.UUID) -> None:
             text("DELETE FROM document_regions WHERE document_version_id = :vid"),
             {"vid": version_id},
         )
+        await session.execute(
+            text(
+                "DELETE FROM audit_logs WHERE entity_type = 'document_version' "
+                "AND entity_id = :vid"
+            ),
+            {"vid": version_id},
+        )
         await session.commit()
+
+
+async def _audit_log_rows(version_id: uuid.UUID) -> list[dict]:
+    async with async_session_factory() as session:
+        return [
+            dict(row)
+            for row in (
+                await session.execute(
+                    select(audit_logs).where(audit_logs.c.entity_id == version_id)
+                )
+            )
+            .mappings()
+            .all()
+        ]
 
 
 async def _job_row(job_id) -> dict:
@@ -303,6 +325,16 @@ async def test_interpret_structure_creates_a_new_job_and_chains_into_chunk_docum
             ).mappings().one()
         assert new_job["status"] == "QUEUED"
         assert new_job["document_version_id"] == seeded["version_id"]
+
+        # ADR-019: confidence-based auto-approval must leave a system-actor
+        # audit trail — this is what makes it an accepted, audited
+        # exception rather than a silent bypass of document approval.
+        audit_rows = await _audit_log_rows(seeded["version_id"])
+        assert len(audit_rows) == 1
+        assert audit_rows[0]["actor_id"] is None
+        assert audit_rows[0]["action"] == "document_version.auto_approved"
+        assert audit_rows[0]["entity_type"] == "document_version"
+        assert audit_rows[0]["new_value"]["threshold"] == settings.STRUCTURE_HIGH_CONFIDENCE
     finally:
         await _cleanup(seeded["version_id"])
 

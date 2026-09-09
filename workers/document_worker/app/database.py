@@ -334,6 +334,27 @@ document_relations = Table(
 )
 
 
+# ADR-019: interpret_document (app/tasks.py) is the sole writer of this
+# worker's audit entries — one row per confidence-based auto-approval, so
+# there is always a durable record of which system decision skipped the
+# manual admin approve step. Mirrors apps/api/app/audit/models.py's
+# AuditLog; actor_id is left NULL here since the actor is the system, not a
+# user.
+audit_logs = Table(
+    "audit_logs",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("actor_id", UUID(as_uuid=True)),
+    Column("organization_id", UUID(as_uuid=True)),
+    Column("action", String(100)),
+    Column("entity_type", String(100)),
+    Column("entity_id", UUID(as_uuid=True)),
+    Column("old_value", JSONB),
+    Column("new_value", JSONB),
+    Column("created_at", DateTime(timezone=True)),
+)
+
+
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with async_session_factory() as session:
         yield session
