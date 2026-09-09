@@ -1,10 +1,11 @@
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import require_role
+from app.auth.router import limiter, user_or_ip_key
 from app.citations.service import AdaptiveCitationService
 from app.core.config import settings
 from app.core.database import get_db
@@ -30,7 +31,9 @@ _INSUFFICIENT_EVIDENCE_MESSAGE = (
 
 
 @router.post("/answer", response_model=AnswerResponse)
+@limiter.limit("30/minute", key_func=user_or_ip_key)
 async def answer(
+    request: Request,
     body: AnswerRequest,
     membership: OrganizationMember = Depends(
         require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
