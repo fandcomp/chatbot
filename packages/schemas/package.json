@@ -1,0 +1,15 @@
+{
+  "name": "@chatbot/schemas",
+  "private": true,
+  "version": "0.1.0",
+  "description": "TypeScript types generated from apps/api's OpenAPI schema — the shared contract surface between apps/api and apps/web.",
+  "type": "module",
+  "main": "src/api-types.ts",
+  "types": "src/api-types.ts",
+  "scripts": {
+    "generate": "node scripts/generate.mjs"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.4.4"
+  }
+}

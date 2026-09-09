@@ -1,3 +1,4 @@
+import type { components } from "@chatbot/schemas/src/api-types";
 import { apiClient } from "@/lib/api-client";
 import type { Citation } from "@/lib/chat-schemas";
 
@@ -7,17 +8,10 @@ export type KnowledgeSpace = {
   created_at: string;
 };
 
-export type DocumentLifecycleStatus =
-  | "UPLOADED"
-  | "PROCESSING"
-  | "PARSED"
-  | "REVIEW_REQUIRED"
-  | "APPROVED"
-  | "INDEXING"
-  | "ACTIVE"
-  | "PROCESSING_FAILED"
-  | "SUPERSEDED"
-  | "ARCHIVED";
+// Generated from apps/api's OpenAPI schema (see packages/schemas/README.md)
+// rather than hand-duplicated — this is the enum apps/api/app/documents/
+// models.py's DocumentLifecycleStatus actually emits.
+export type DocumentLifecycleStatus = components["schemas"]["DocumentLifecycleStatus"];
 
 export type ProcessingJobStatus = "QUEUED" | "PROCESSING" | "SUCCEEDED" | "FAILED";
 
