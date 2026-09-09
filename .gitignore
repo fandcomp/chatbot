@@ -22,6 +22,11 @@ __pycache__/
 
 # Docker volumes are named volumes (not bind mounts) so nothing to ignore here
 
+# e2e — generated per-run seed data (fresh org/credentials each run)
+tests/e2e/.seed.json
+tests/e2e/test-results/
+tests/e2e/playwright-report/
+
 # Logs
 *.log
 npm-debug.log*
