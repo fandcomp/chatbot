@@ -1,5 +1,10 @@
 # ADR-017: Answer Cache Scope and Authenticated Rate-Limit Keying
 
+> **Amended by [ADR-018](ADR-018-cross-process-answer-cache-invalidation.md):**
+> the "document version reaching ACTIVE is not covered" invalidation gap
+> described below is closed — the worker now invalidates directly rather
+> than relying on TTL alone.
+
 ## Context
 
 M15 (Production Hardening, spec §98) targets security, performance, caching,

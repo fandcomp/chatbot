@@ -19,6 +19,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy import bindparam, insert, select, update
 
+from app.caching import invalidate_answer_cache
 from app.celery_app import celery_app
 from app.chunking.pipeline import build_document_chunks
 from app.core.config import settings
@@ -799,6 +800,13 @@ async def _index_document_async(job_id: str, attempts: int) -> None:
             )
 
         await session.commit()
+
+    # ADR-018: a new ACTIVE version invalidates every cached answer for this
+    # organization — apps/api's answer cache would otherwise keep serving a
+    # superseded regulation's text until its TTL expires. Runs after commit
+    # so the DB is already durably ACTIVE regardless of whether this
+    # best-effort Redis call succeeds.
+    await invalidate_answer_cache(version_row["organization_id"])
 
 
 @celery_app.task(

@@ -1,8 +1,9 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.audit.service import log_action
 from app.auth.dependencies import get_current_membership, require_role
@@ -10,8 +11,19 @@ from app.caching.answer_cache import AnswerCacheService
 from app.chunking.models import DocumentChunk
 from app.core.database import get_db
 from app.core.storage import delete_object
-from app.documents.models import Document, DocumentLifecycleStatus, DocumentVersion
-from app.documents.schemas import ArchiveResult, DocumentPublic
+from app.documents.models import (
+    Document,
+    DocumentLifecycleStatus,
+    DocumentRelation,
+    DocumentRelationType,
+    DocumentVersion,
+)
+from app.documents.schemas import (
+    ArchiveResult,
+    CreateRelationRequest,
+    DocumentPublic,
+    DocumentRelationPublic,
+)
 from app.indexing.qdrant_client import delete_document_points
 from app.ingestion.models import ProcessingJob
 from app.organizations.models import OrganizationMember, OrgRole
@@ -28,6 +40,25 @@ async def latest_version(db: AsyncSession, document_id: uuid.UUID) -> DocumentVe
         .limit(1)
     )
     return result.scalar_one()
+
+
+async def latest_active_version(db: AsyncSession, document_id: uuid.UUID) -> DocumentVersion | None:
+    """Like `latest_version`, but only a version that has actually cleared
+    approval (spec §9's ACTIVE) counts — used wherever a document is about to
+    be cited as the SOURCE of a claim about another document (e.g. "this
+    AMENDS that"), so an unapproved document's title/relation can never reach
+    another document's citations before it has been through admin review.
+    """
+    result = await db.execute(
+        select(DocumentVersion)
+        .where(
+            DocumentVersion.document_id == document_id,
+            DocumentVersion.status == DocumentLifecycleStatus.ACTIVE,
+        )
+        .order_by(DocumentVersion.version_number.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 async def _latest_job_id(db: AsyncSession, document_version_id: uuid.UUID) -> uuid.UUID | None:
@@ -154,6 +185,20 @@ async def delete_document(
     # between stages) is required, otherwise it may attempt to delete
     # `documents` before its dependents and hit a ForeignKeyViolationError.
     if version_ids:
+        # M13's auto-supersede (and any admin-curated relation, §21) creates
+        # document_relations rows referencing these versions with no
+        # ON DELETE CASCADE — must go before the versions themselves or this
+        # would hit a ForeignKeyViolationError on any document that has ever
+        # been superseded or manually related to another.
+        await db.execute(
+            delete(DocumentRelation).where(
+                or_(
+                    DocumentRelation.from_document_version_id.in_(version_ids),
+                    DocumentRelation.to_document_version_id.in_(version_ids),
+                )
+            )
+        )
+
         jobs_result = await db.execute(
             select(ProcessingJob).where(ProcessingJob.document_version_id.in_(version_ids))
         )
@@ -211,4 +256,162 @@ async def delete_document(
     )
     await db.commit()
     # spec §57: deleting a document must also clear "cached answers".
+    await AnswerCacheService().invalidate_organization(membership.organization_id)
+
+
+def _relation_public(
+    relation: DocumentRelation,
+    from_document_id: uuid.UUID,
+    from_document_title: str,
+    to_document_id: uuid.UUID,
+    to_document_title: str,
+) -> DocumentRelationPublic:
+    return DocumentRelationPublic(
+        id=relation.id,
+        from_document_id=from_document_id,
+        from_document_title=from_document_title,
+        to_document_id=to_document_id,
+        to_document_title=to_document_title,
+        relation_type=relation.relation_type,
+        created_at=relation.created_at,
+    )
+
+
+@router.post(
+    "/{document_id}/relations",
+    response_model=DocumentRelationPublic,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_relation(
+    document_id: uuid.UUID,
+    payload: CreateRelationRequest,
+    membership: OrganizationMember = Depends(
+        require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> DocumentRelationPublic:
+    """spec §21: admin-curated relations between two documents (e.g. "Regulation
+    B AMENDS Regulation A") — surfaced later as a citation warning by
+    AdaptiveCitationService so a user citing Regulation A learns it has been
+    amended, even though Regulation A's own version is still ACTIVE.
+    """
+    if payload.relation_type == DocumentRelationType.SUPERSEDED_BY:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="SUPERSEDED_BY is only ever set automatically when a document version "
+            "reaches ACTIVE; it cannot be created directly.",
+        )
+    if payload.target_document_id == document_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="A document cannot relate to itself."
+        )
+
+    from_document = await get_org_scoped_document(db, document_id, membership.organization_id)
+    to_document = await get_org_scoped_document(
+        db, payload.target_document_id, membership.organization_id
+    )
+    from_version = await latest_active_version(db, from_document.id)
+    if from_version is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only an ACTIVE document version can be cited as the source of a "
+            "relation — this document has not been approved and published yet.",
+        )
+    to_version = await latest_version(db, to_document.id)
+
+    relation = DocumentRelation(
+        organization_id=membership.organization_id,
+        from_document_version_id=from_version.id,
+        to_document_version_id=to_version.id,
+        relation_type=payload.relation_type,
+    )
+    db.add(relation)
+    await log_action(
+        db,
+        actor_id=membership.user_id,
+        organization_id=membership.organization_id,
+        action="document_relation_create",
+        entity_type="document_relation",
+        entity_id=relation.id,
+        new_value={
+            "from_document_id": str(from_document.id),
+            "to_document_id": str(to_document.id),
+            "relation_type": payload.relation_type.value,
+        },
+    )
+    await db.commit()
+    await db.refresh(relation)
+    # A cached answer citing either document was built before this relation
+    # existed — it must not keep serving a citation missing this warning.
+    await AnswerCacheService().invalidate_organization(membership.organization_id)
+
+    return _relation_public(relation, from_document.id, from_document.title, to_document.id, to_document.title)
+
+
+@router.get("/{document_id}/relations", response_model=list[DocumentRelationPublic])
+async def list_relations(
+    document_id: uuid.UUID,
+    membership: OrganizationMember = Depends(get_current_membership),
+    db: AsyncSession = Depends(get_db),
+) -> list[DocumentRelationPublic]:
+    document = await get_org_scoped_document(db, document_id, membership.organization_id)
+
+    from_version = aliased(DocumentVersion)
+    to_version = aliased(DocumentVersion)
+    from_doc = aliased(Document)
+    to_doc = aliased(Document)
+
+    rows = (
+        await db.execute(
+            select(DocumentRelation, from_doc, to_doc)
+            .join(from_version, DocumentRelation.from_document_version_id == from_version.id)
+            .join(to_version, DocumentRelation.to_document_version_id == to_version.id)
+            .join(from_doc, from_version.document_id == from_doc.id)
+            .join(to_doc, to_version.document_id == to_doc.id)
+            .where(
+                DocumentRelation.organization_id == membership.organization_id,
+                or_(from_doc.id == document.id, to_doc.id == document.id),
+            )
+        )
+    ).all()
+    return [
+        _relation_public(relation, from_doc_row.id, from_doc_row.title, to_doc_row.id, to_doc_row.title)
+        for relation, from_doc_row, to_doc_row in rows
+    ]
+
+
+@router.delete("/relations/{relation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_relation(
+    relation_id: uuid.UUID,
+    membership: OrganizationMember = Depends(
+        require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    result = await db.execute(
+        select(DocumentRelation).where(
+            DocumentRelation.id == relation_id,
+            DocumentRelation.organization_id == membership.organization_id,
+        )
+    )
+    relation = result.scalar_one_or_none()
+    if relation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relation not found")
+    if relation.relation_type == DocumentRelationType.SUPERSEDED_BY:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="SUPERSEDED_BY reflects the worker's own version history and cannot be "
+            "deleted directly.",
+        )
+
+    await db.delete(relation)
+    await log_action(
+        db,
+        actor_id=membership.user_id,
+        organization_id=membership.organization_id,
+        action="document_relation_delete",
+        entity_type="document_relation",
+        entity_id=relation_id,
+    )
+    await db.commit()
     await AnswerCacheService().invalidate_organization(membership.organization_id)

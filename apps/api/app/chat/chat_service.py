@@ -200,7 +200,9 @@ class ChatService:
         verified_claims = self._verification.verify(
             structured_answer.claims, evidence_response.evidence
         )
-        citations = await self._citations.build_citations(evidence_response.evidence)
+        citations = await self._citations.build_citations(
+            evidence_response.evidence, conversation.organization_id
+        )
 
         answer_response = AnswerResponse(
             query=query,
@@ -320,7 +322,9 @@ class ChatService:
 
         claims = parse_inline_citations(full_text)
         verified_claims = self._verification.verify(claims, evidence_response.evidence)
-        citations = await self._citations.build_citations(evidence_response.evidence)
+        citations = await self._citations.build_citations(
+            evidence_response.evidence, conversation.organization_id
+        )
 
         await self._conversations.append_message(
             conversation.id,

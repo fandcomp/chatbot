@@ -104,7 +104,9 @@ async def answer(
     )
 
     citation_service = AdaptiveCitationService(db)
-    citations = await citation_service.build_citations(evidence_response.evidence)
+    citations = await citation_service.build_citations(
+        evidence_response.evidence, membership.organization_id
+    )
 
     return AnswerResponse(
         query=body.query,

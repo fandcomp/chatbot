@@ -7,6 +7,7 @@ from qdrant_client import AsyncQdrantClient, models
 from sqlalchemy import insert, select, text
 
 from app.core.config import settings
+from app.core.redis_client import redis_client
 from app.database import (
     async_session_factory,
     document_chunks,
@@ -292,6 +293,42 @@ async def test_index_document_auto_supersedes_previous_active_version(seeded_doc
                 text("DELETE FROM document_versions WHERE id = :old"), {"old": old_version_id}
             )
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_index_document_invalidates_answer_cache_for_the_organization(
+    seeded_document_version,
+):
+    # ADR-018: a version reaching ACTIVE must clear the org's cached answers
+    # so a stale-regulation answer is never served past this point.
+    seeded = seeded_document_version
+    await _seed_document_version_and_job(seeded, status="INDEXING")
+    region_id = uuid.uuid4()
+    node_id = uuid.uuid4()
+    chunk_id = uuid.uuid4()
+    await _seed_region(seeded, region_id)
+    await _seed_node(seeded, region_id, node_id)
+    await _seed_chunk(seeded, node_id, chunk_id)
+
+    own_key = f"answer_cache:{seeded['org_id']}:{uuid.uuid4()}:deadbeef"
+    other_org_id = uuid.uuid4()
+    other_key = f"answer_cache:{other_org_id}:{uuid.uuid4()}:deadbeef"
+    await redis_client.set(own_key, "{}")
+    await redis_client.set(other_key, "{}")
+
+    fake_gateway = AsyncMock()
+    fake_gateway.embed_documents = AsyncMock(return_value=[[0.1] * settings.VOYAGE_EMBEDDING_DIMENSION])
+
+    try:
+        with patch("app.tasks.EmbeddingGateway", return_value=fake_gateway):
+            await _index_document_async(str(seeded["job_id"]), attempts=1)
+
+        assert await redis_client.get(own_key) is None
+        # Another organization's cached answers must be left untouched.
+        assert await redis_client.get(other_key) is not None
+    finally:
+        await redis_client.delete(own_key, other_key)
+        await _cleanup(seeded)
 
 
 @pytest.mark.asyncio

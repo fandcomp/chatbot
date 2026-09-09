@@ -20,18 +20,20 @@ Scope decisions, recorded in ADR-017:
   (M13), and there is no per-user knowledge-space ACL narrower than
   `organization_id` (every org member can query every knowledge space they
   belong to). The key below omits both accordingly.
-- Invalidation only covers the two document-lifecycle events apps/api can
-  reach synchronously in-process: archive (`documents/router.py`) and
-  permanent delete. A new document version reaching ACTIVE (including
-  auto-supersede) happens in workers/document_worker, a separate process
-  with no connection to this cache — those transitions rely on
-  `ANSWER_CACHE_TTL_SECONDS` alone to bound staleness. This is an accepted
-  v1 gap, not a hidden one — see ADR-017 for what a cross-process
-  invalidation channel (e.g. Redis pub/sub) would need to look like.
+- Invalidation covers three document-lifecycle events: archive and permanent
+  delete, reached synchronously in-process from `documents/router.py`, plus
+  a document version reaching ACTIVE (fresh publish or M13 auto-supersede),
+  reached from workers/document_worker — a separate process with no import
+  path to this module. Per ADR-018, the worker doesn't call this class; it
+  mirrors this file's own key schema (`answer_cache:{organization_id}:*`)
+  directly against the same Redis instance via
+  `workers/document_worker/app/caching.py`. If the key schema below changes,
+  that file must change with it.
 """
 
 import hashlib
 import json
+import logging
 import uuid
 
 import redis.asyncio as redis
@@ -40,6 +42,8 @@ from app.core.config import settings
 from app.core.redis_client import redis_client
 from app.core.text import normalize_query_text
 from app.verification.schemas import AnswerResponse
+
+logger = logging.getLogger(__name__)
 
 _KEY_PREFIX = "answer_cache"
 
@@ -101,5 +105,17 @@ class AnswerCacheService:
         given the short TTL already bounds cache size.
         """
         pattern = f"{_KEY_PREFIX}:{organization_id}:*"
-        async for key in self._redis.scan_iter(match=pattern):
-            await self._redis.delete(key)
+        try:
+            async for key in self._redis.scan_iter(match=pattern):
+                await self._redis.delete(key)
+        except Exception:
+            # A Redis hiccup here must not turn an already-committed mutation
+            # (relation create/delete, archive, document delete) into a 500 —
+            # ANSWER_CACHE_TTL_SECONDS remains the fallback staleness bound,
+            # same as the worker's mirrored invalidation (ADR-018).
+            logger.warning(
+                "Answer-cache invalidation failed for organization %s; falling back to "
+                "TTL expiry.",
+                organization_id,
+                exc_info=True,
+            )

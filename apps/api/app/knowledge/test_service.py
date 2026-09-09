@@ -103,7 +103,9 @@ class TestKnowledgeService:
         # real answer would go through, but this endpoint surfaces the
         # answer text either way — it's a quality preview, not a gate.
         self._verification.verify(structured_answer.claims, evidence_response.evidence)
-        citations = await self._citations.build_citations(evidence_response.evidence)
+        citations = await self._citations.build_citations(
+            evidence_response.evidence, organization_id
+        )
 
         await self._analytics.log_query(
             organization_id=organization_id,
