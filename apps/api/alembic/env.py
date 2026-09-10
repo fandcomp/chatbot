@@ -42,6 +42,7 @@ from app.parsing.models import (  # noqa: F401
     DocumentRegion,
     DocumentStructureProfile,
 )
+from app.sources.models import ScanRun, SourceEntry, SourceRoot  # noqa: F401
 from app.users.models import User  # noqa: F401
 
 # this is the Alembic Config object, which provides

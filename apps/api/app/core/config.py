@@ -60,8 +60,25 @@ class Settings(BaseSettings):
     # arm's own retrieval depth) and RERANK_TOP_K (M8's final evidence count).
     FUSION_TOP_K: int = 20
 
-    # FILE
-    MAX_FILE_SIZE_MB: int = 50
+    # FILE — per-file limit, deliberately separate from any total-archive
+    # size (LAN archive can reach ~4TB; this never bounds that, see
+    # docs/ADDENDUM_LAN_ARCHIVE_4TB_COST_CONTROL.md §1).
+    MAX_FILE_SIZE_MB: int = 100
+
+    # LAN ARCHIVE CONNECTOR (LAN-M1, ADR-020) — pilot defaults, not
+    # benchmarked production values. CONNECTOR_ALLOWED_HOSTS/SHARES is an
+    # explicit allowlist; a SourceRoot outside it is rejected at creation,
+    # never silently expanded to a broader scope.
+    CONNECTOR_ENABLED: bool = False
+    CONNECTOR_ALLOWED_HOSTS: str = ""
+    SCAN_PAGE_SIZE: int = 500
+    # Unused until LAN-M2 (snapshot/transfer) — defined now so the config
+    # surface doesn't need another migration when that milestone lands.
+    SCAN_STABILITY_WINDOW_SECONDS: int = 30
+
+    @property
+    def connector_allowed_hosts_list(self) -> list[str]:
+        return [host.strip().lower() for host in self.CONNECTOR_ALLOWED_HOSTS.split(",") if host.strip()]
 
     # STRUCTURE
     STRUCTURE_HIGH_CONFIDENCE: float = 0.90

@@ -14,6 +14,8 @@
 
 Self-Service Regulatory Knowledge Assistant — a multi-tenant chatbot platform that turns client-uploaded regulatory documents (of unknown, varying structure) into a verified, traceable knowledge base, using an **Adaptive Structure-Aware Contextual Hybrid RAG** pipeline. Stack: Next.js + TypeScript (frontend), FastAPI + Python (backend), PostgreSQL + Qdrant + Redis + Celery + S3/MinIO, Voyage embeddings/reranking, GPT-OSS 20B/120B via Groq through a Hugging Face gateway. Full detail: [`docs/MASTER_DEVELOPMENT_SPEC.md`](docs/MASTER_DEVELOPMENT_SPEC.md) — treat it as the architectural source of truth; read it before making non-trivial changes. It is extended by [`docs/ADDENDUM_ADAPTIVE_MIXED_STRUCTURE_DOCUMENTS.md`](docs/ADDENDUM_ADAPTIVE_MIXED_STRUCTURE_DOCUMENTS.md) (see [`ADR-014`](docs/adr/ADR-014-region-based-generic-structure.md)) — required reading before M3/M4/M5/M6/M7/M10 work.
 
+A separate, in-progress track adds ingestion of a large (up to ~4TB) Windows LAN file-share archive, tracked as `LAN-M1`..`LAN-M6` (independent numbering, does not renumber the milestones above). See [`docs/ADDENDUM_LAN_ARCHIVE_4TB_COST_CONTROL.md`](docs/ADDENDUM_LAN_ARCHIVE_4TB_COST_CONTROL.md), [`ADR-020`](docs/adr/ADR-020-lan-archive-source-connector.md), [`docs/LAN_ARCHIVE_IMPLEMENTATION_PLAN.md`](docs/LAN_ARCHIVE_IMPLEMENTATION_PLAN.md), and current status in [`docs/LAN_ARCHIVE_PROGRESS.md`](docs/LAN_ARCHIVE_PROGRESS.md) — required reading before touching anything under `apps/api/app/sources/` or `workers/document_worker/app/sources/`.
+
 ## Critical Rules
 
 ### Do Not (spec §101)

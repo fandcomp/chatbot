@@ -16,3 +16,10 @@ def enqueue_verify_upload(job_id: str) -> str:
 def enqueue_chunk_document(job_id: str) -> str:
     result = celery_client.send_task("document_worker.chunk_document", args=[job_id])
     return result.id
+
+
+def enqueue_scan_source(scan_run_id: str) -> str:
+    """LAN-M1 (docs/ADDENDUM_LAN_ARCHIVE_4TB_COST_CONTROL.md §3) — catalog-only
+    discovery scan. Never calls a provider or copies file content."""
+    result = celery_client.send_task("document_worker.scan_source", args=[scan_run_id])
+    return result.id

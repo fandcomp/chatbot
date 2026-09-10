@@ -334,6 +334,70 @@ document_relations = Table(
 )
 
 
+_lan_source_type = ENUM("LOCAL_FAKE", "WINDOWS_UNC", name="lan_source_type", create_type=False)
+_lan_source_health = ENUM(
+    "HEALTHY", "UNREACHABLE", "ACCESS_DENIED", "PARTIAL", "UNKNOWN",
+    name="lan_source_health", create_type=False,
+)
+_lan_scan_run_status = ENUM(
+    "RUNNING", "COMPLETED", "PARTIAL", "FAILED", name="lan_scan_run_status", create_type=False
+)
+_lan_discovery_status = ENUM(
+    "PRESENT", "MISSING_CANDIDATE", "CONFIRMED_MISSING",
+    name="lan_discovery_status", create_type=False,
+)
+_lan_entry_access_status = ENUM(
+    "OK", "ACCESS_DENIED", "NETWORK_ERROR", "NOT_FOUND",
+    name="lan_entry_access_status", create_type=False,
+)
+
+# LAN-M1 (ADR-020) — apps/api creates source_roots and owns source_type/
+# root_path/allowed_subtrees; this worker reads those to pick and configure
+# an adapter, and is the sole writer of health/health_checked_at.
+source_roots = Table(
+    "source_roots",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("organization_id", UUID(as_uuid=True)),
+    Column("source_type", _lan_source_type),
+    Column("root_path", String(1024)),
+    Column("allowed_subtrees", JSONB),
+    Column("health", _lan_source_health),
+    Column("health_checked_at", DateTime(timezone=True)),
+)
+
+scan_runs = Table(
+    "scan_runs",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("organization_id", UUID(as_uuid=True)),
+    Column("source_root_id", UUID(as_uuid=True)),
+    Column("status", _lan_scan_run_status),
+    Column("cursor", JSONB),
+    Column("entries_seen", Integer),
+    Column("entries_new", Integer),
+    Column("entries_updated", Integer),
+    Column("error_summary", JSONB),
+    Column("finished_at", DateTime(timezone=True)),
+)
+
+source_entries = Table(
+    "source_entries",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("organization_id", UUID(as_uuid=True)),
+    Column("source_root_id", UUID(as_uuid=True)),
+    Column("normalized_path", String(2048)),
+    Column("size_bytes", Integer),
+    Column("mtime", DateTime(timezone=True)),
+    Column("last_seen_scan_id", UUID(as_uuid=True)),
+    Column("discovery_status", _lan_discovery_status),
+    Column("access_status", _lan_entry_access_status),
+    Column("created_at", DateTime(timezone=True)),
+    Column("updated_at", DateTime(timezone=True)),
+)
+
+
 # ADR-019: interpret_document (app/tasks.py) is the sole writer of this
 # worker's audit entries — one row per confidence-based auto-approval, so
 # there is always a durable record of which system decision skipped the

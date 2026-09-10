@@ -35,5 +35,18 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "voyage-context-4"
     VOYAGE_EMBEDDING_DIMENSION: int = 1024
 
+    # LAN ARCHIVE CONNECTOR (LAN-M1, ADR-020) — mirrors
+    # apps/api/app/core/config.py's own CONNECTOR_ALLOWED_HOSTS (hand-synced-
+    # config pattern, same as STRUCTURE_HIGH_CONFIDENCE above). This worker
+    # is the one that actually enforces the allowlist against a real UNC
+    # path (windows_unc_adapter.py) — apps/api's copy only gates SourceRoot
+    # creation.
+    CONNECTOR_ALLOWED_HOSTS: str = ""
+    SCAN_PAGE_SIZE: int = 500
+
+    @property
+    def connector_allowed_hosts_list(self) -> list[str]:
+        return [host.strip().lower() for host in self.CONNECTOR_ALLOWED_HOSTS.split(",") if host.strip()]
+
 
 settings = Settings()

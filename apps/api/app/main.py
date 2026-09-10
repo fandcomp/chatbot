@@ -19,6 +19,7 @@ from app.organizations.router import router as organizations_router
 from app.parsing.router import router as parsing_router
 from app.reranking.router import router as reranking_router
 from app.retrieval.router import router as retrieval_router
+from app.sources.router import router as sources_router
 from app.verification.router import router as verification_router
 
 
@@ -56,6 +57,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router)
     app.include_router(analytics_router)
     app.include_router(feedback_router)
+    app.include_router(sources_router)
 
     return app
 
