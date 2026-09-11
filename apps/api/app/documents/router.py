@@ -23,6 +23,7 @@ from app.documents.schemas import (
     CreateRelationRequest,
     DocumentPublic,
     DocumentRelationPublic,
+    RollbackResult,
 )
 from app.indexing.qdrant_client import delete_document_points
 from app.ingestion.models import ProcessingJob
@@ -160,6 +161,86 @@ async def archive_document(
     await AnswerCacheService().invalidate_organization(membership.organization_id)
 
     return ArchiveResult(document_id=document.id, document_version_id=version.id, status=version.status)
+
+
+@router.post("/{document_id}/versions/{version_id}/rollback", response_model=RollbackResult)
+async def rollback_document_version(
+    document_id: uuid.UUID,
+    version_id: uuid.UUID,
+    membership: OrganizationMember = Depends(
+        require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> RollbackResult:
+    """M13's "rollback design" target — restores a previously-ACTIVE version
+    (SUPERSEDED by a later version, or ARCHIVED by an admin) back to ACTIVE.
+    The complement of `archive_document`/the worker's auto-supersede: both of
+    those only ever move a version forward, out of ACTIVE; this is the one
+    path back in.
+
+    Correctness needs no Qdrant cleanup or re-indexing, same reasoning as
+    archive_document: a version only ever reaches SUPERSEDED/ARCHIVED after
+    having been ACTIVE, which means it was indexed with
+    `document_status=ACTIVE` baked into its Qdrant payload at the time — M7's
+    retrieval already re-verifies status live against Postgres on every
+    query, so flipping the Postgres status back to ACTIVE is sufficient on
+    its own.
+    """
+    document = await get_org_scoped_document(db, document_id, membership.organization_id)
+
+    target = (
+        await db.execute(
+            select(DocumentVersion).where(
+                DocumentVersion.id == version_id, DocumentVersion.document_id == document.id
+            )
+        )
+    ).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document version not found")
+
+    if target.status not in (DocumentLifecycleStatus.SUPERSEDED, DocumentLifecycleStatus.ARCHIVED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only a SUPERSEDED or ARCHIVED version can be rolled back to.",
+        )
+
+    current_active = await latest_active_version(db, document.id)
+    superseded_version_id: uuid.UUID | None = None
+    if current_active is not None:
+        current_active.status = DocumentLifecycleStatus.SUPERSEDED
+        db.add(
+            DocumentRelation(
+                organization_id=membership.organization_id,
+                from_document_version_id=current_active.id,
+                to_document_version_id=target.id,
+                relation_type=DocumentRelationType.SUPERSEDED_BY,
+            )
+        )
+        superseded_version_id = current_active.id
+
+    target.status = DocumentLifecycleStatus.ACTIVE
+    await log_action(
+        db,
+        actor_id=membership.user_id,
+        organization_id=membership.organization_id,
+        action="document_version_rollback",
+        entity_type="document_version",
+        entity_id=target.id,
+        old_value={"superseded_version_id": str(superseded_version_id)} if superseded_version_id else None,
+    )
+    await db.commit()
+    await db.refresh(target)
+    # spec §45: cached answers must be invalidated when a document's status
+    # changes — a rolled-back-to version should serve fresh evidence, not a
+    # cached answer built before it was ACTIVE again.
+    await AnswerCacheService().invalidate_organization(membership.organization_id)
+
+    return RollbackResult(
+        document_id=document.id,
+        document_version_id=target.id,
+        status=target.status,
+        superseded_version_id=superseded_version_id,
+    )
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -22,6 +22,16 @@ class ArchiveResult(BaseModel):
     status: DocumentLifecycleStatus
 
 
+class RollbackResult(BaseModel):
+    document_id: uuid.UUID
+    # The version that is now ACTIVE (the rollback target).
+    document_version_id: uuid.UUID
+    status: DocumentLifecycleStatus
+    # The version that was ACTIVE before this rollback, now SUPERSEDED — None
+    # if the document had no ACTIVE version at all before rolling back.
+    superseded_version_id: uuid.UUID | None
+
+
 class CreateRelationRequest(BaseModel):
     # spec §21 — admin-curated relations (AMENDS/REPEALS/REPLACES/IMPLEMENTS/
     # REFERS_TO). SUPERSEDED_BY is excluded here: the worker auto-creates it
