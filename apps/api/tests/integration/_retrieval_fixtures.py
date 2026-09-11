@@ -20,6 +20,7 @@ from app.parsing.models import (
     DocumentRegion,
     StructuralRegionType,
 )
+from app.sources.models import SourceEntry, SourceRoot, SourceType
 
 
 async def resolve_organization_id(db: AsyncSession, knowledge_space_id: uuid.UUID) -> uuid.UUID:
@@ -30,14 +31,49 @@ async def resolve_organization_id(db: AsyncSession, knowledge_space_id: uuid.UUI
     ).scalar_one()
 
 
+async def seed_lan_source_entry(
+    db: AsyncSession, organization_id: uuid.UUID, knowledge_space_id: uuid.UUID
+) -> uuid.UUID:
+    """LAN-M4: a minimal SourceRoot/SourceEntry pair, just enough to attach a
+    DocumentVersion.source_entry_id — proves retrieval/revocation treats a
+    LAN-promoted document identically to an uploaded one, with no
+    source-type branching anywhere downstream (there is none to test).
+    """
+    root = SourceRoot(
+        organization_id=organization_id,
+        knowledge_space_id=knowledge_space_id,
+        source_type=SourceType.LOCAL_FAKE,
+        display_name="Retrieval isolation test root",
+        root_path="/tmp/retrieval-isolation-test",
+    )
+    db.add(root)
+    await db.flush()
+
+    entry = SourceEntry(
+        organization_id=organization_id,
+        source_root_id=root.id,
+        normalized_path="test.pdf",
+        size_bytes=100,
+    )
+    db.add(entry)
+    await db.flush()
+
+    return entry.id
+
+
 async def seed_active_document(
     db: AsyncSession,
     organization_id: uuid.UUID,
     knowledge_space_id: uuid.UUID,
     title: str = "Test Regulation",
     status: DocumentLifecycleStatus = DocumentLifecycleStatus.ACTIVE,
+    source_entry_id: uuid.UUID | None = None,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     """Creates Document + DocumentVersion(status) + one DocumentRegion.
+
+    `source_entry_id` (LAN-M4) marks the version as LAN-promoted, same as
+    the real promote_source_entry task does — every retrieval/revocation
+    path must treat it identically to a NULL (ordinary upload) version.
 
     Returns (document_id, version_id, region_id).
     """
@@ -57,6 +93,7 @@ async def seed_active_document(
         size_bytes=100,
         storage_path="unused/path.pdf",
         status=status,
+        source_entry_id=source_entry_id,
     )
     db.add(version)
     await db.flush()

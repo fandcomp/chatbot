@@ -2,6 +2,67 @@
 
 Checkpoint doc for the LAN archive ingestion track (`docs/LAN_ARCHIVE_IMPLEMENTATION_PLAN.md`). Updated at the end of each milestone so the next session can resume without re-auditing from scratch.
 
+## LAN-M4: End-to-end access and retrieval — **complete**
+
+Scoped to **audit + regression tests, viewer endpoint deferred** (a deliberate decision, confirmed before starting): the addendum's stated requirements (tenant scoping across retrieval-adjacent paths, curated-access-by-default, immediate revocation) turned out to already be fully satisfied by the existing architecture, verified by reading the actual code before writing anything. The one genuinely new thing the addendum names — an authenticated document viewer/download endpoint — doesn't exist for **any** document type today, LAN-sourced or uploaded, so building one isn't a LAN-specific gap; it's deferred to a follow-up milestone, same framing as legacy `.doc` in LAN-M3. Full Windows-ACL mode is likewise deferred — the addendum itself calls it "LAN-M4's own separate work."
+
+### Acceptance criteria status
+
+| Criterion | Status |
+|---|---|
+| A LAN-sourced document's chunks are retrievable with identical cross-org isolation as an uploaded document | **Passed** — `test_org_a_cannot_exact_match_org_bs_lan_sourced_article` |
+| Archiving a LAN-sourced document revokes it immediately, with no dependency on any rescan/ingestion cycle | **Passed** — `test_archiving_a_lan_sourced_document_revokes_it_immediately` |
+| No regression in existing suites (LAN-M1/M2/M3 + M0-M15 core) | **Passed** — see Test commands and results below |
+
+### Why this milestone needed almost no new production code
+
+Every principle the addendum's §7 names for LAN-M4 turns out to already hold, because LAN-M2 made a specific design choice that pays off here: a LAN-promoted document is a plain `Document`/`DocumentVersion` row (only `DocumentVersion.source_entry_id` marks its origin) that flows through the exact same pipeline as an ordinary upload. Verified directly, not assumed:
+
+- **Tenant scoping across retrieval/reranker/evidence/citations/cache**: `retrieval/service.py::_fetch_verified_chunks` already filters strictly by `organization_id` + `ACTIVE` status (+ optional `knowledge_space_id`) for both exact-match and hybrid retrieval, with zero awareness of document source. `RerankingService.select_evidence` and `AdaptiveCitationService.build_citations` both take an already-tenant-scoped chunk/evidence list as **input** — neither re-queries the database independently — so there is no separate code path for "reranker tenant scoping" or "citation tenant scoping" to test; they inherit retrieval's guarantee by construction. `AnswerCacheService` keys are already organization-prefixed (ADR-018).
+- **"Curated access by default"** is already exactly the existing `OrgRole`/knowledge-space-membership authorization — nothing LAN-specific to add.
+- **"Revocation immediate, independent of ingestion cycle"**: `POST /documents/{id}/archive` already exists (flips `ACTIVE`→`ARCHIVED`, invalidates the answer cache synchronously, and retrieval already re-verifies status live against Postgres) and works identically on LAN-promoted documents with zero changes — confirmed with a real test, not just code reading.
+
+### Key design decision
+
+Rather than writing new production code to satisfy requirements that already hold, this milestone added the regression tests that **prove** they hold specifically for LAN-sourced documents — closing the risk that this was an untested assumption. Two tests were sufficient (not one per named path) because reranker/evidence/citations/cache have no independent tenant-scoping logic of their own to test separately; they all consume `RetrievalService`'s already-verified output.
+
+### Files changed
+
+**Docs:**
+- `docs/LAN_ARCHIVE_PROGRESS.md` (this file)
+
+**apps/api:**
+- `apps/api/tests/integration/_retrieval_fixtures.py` — new `seed_lan_source_entry` helper; `seed_active_document` gained an optional `source_entry_id` parameter (default `None`, preserving existing callers' behavior unchanged)
+- `apps/api/tests/integration/test_retrieval_tenant_isolation.py` — two new tests (see acceptance criteria table)
+
+### Test commands and results
+
+```
+cd apps/api && uv run pytest -q
+  -> 205 passed (was 203 after LAN-M3; +2 new LAN-M4 regression tests)
+
+cd apps/api && uv run pytest tests/integration/test_retrieval_tenant_isolation.py -q
+  -> 6 passed (was 4 after M7/M13; +2 LAN-M4 tests)
+```
+
+### Assumptions not yet validated
+
+- Everything already listed under LAN-M1/LAN-M2/LAN-M3 still applies.
+- No new coverage was added to `tests/e2e`'s golden-path/RAG-eval harness for a LAN-sourced document specifically — the two integration tests added here exercise the same `RetrievalService`/`archive_document` code the e2e harness already covers for uploads, so this was judged sufficient rather than redundant. Revisit if a future milestone's e2e harness changes shape in a way that could diverge by source type.
+
+### Explicitly deferred (recorded, not silently dropped)
+
+- **Authenticated document viewer/download endpoint** — per the scoping decision above. Doesn't exist for any document type yet; the addendum's constraint ("never a raw UNC path in the browser") is a principle to hold *when* it's eventually built, not a mandate to build it now.
+- **Full Windows-ACL mode** (identity/group mapping, freshness sync, fail-closed policy) — explicitly optional per the addendum's own framing ("LAN-M4's own separate work"). The curated-access default (`OrgRole`) is what's actually implemented and tested.
+
+### Blockers
+
+- Same as LAN-M1/M2/M3: no real Windows LAN/SMB share reachable from this dev environment.
+
+### Next step
+
+LAN-M4 is complete per its acceptance criteria. Per Operating Rule #3, **do not** proceed to LAN-M5 (cost control and admin UI) automatically — re-read this file plus the implementation plan's LAN-M5 section first.
+
 ## LAN-M3: DOCX parsing and embedding cache — **complete**
 
 Scoped to **DOCX only** (a deliberate decision, confirmed before starting): legacy binary `.doc` needs a separate sandboxed converter (macros/external resources disabled, subprocess timeout/memory limits) and is deferred to a follow-up milestone. No code change was needed for `.doc` to keep failing cleanly — `ALLOWED_EXTENSIONS` already excluded it at both the ordinary upload path and LAN promotion since LAN-M2.
@@ -232,6 +293,7 @@ LAN-M2 is complete per its acceptance criteria. Per Operating Rule #3, **do not*
 
 ## Milestone history
 
+- **LAN-M4** — end-to-end access/retrieval audit: verified (with regression tests, not just code reading) that tenant scoping and immediate revocation already work identically for LAN-sourced documents; viewer endpoint and Windows-ACL mode explicitly deferred. See acceptance criteria table above.
 - **LAN-M3** — DOCX parsing (page-optional pipeline generalization) and embedding cache. See acceptance criteria table above.
 - **LAN-M2** — selective snapshot/promotion into the existing document pipeline, streaming transfer, dedup, disk watermark, crash-safe lease-based idempotency. See acceptance criteria table above.
 - **LAN-M1** — source registry, adapter contract, catalog-only discovery. 9/9 acceptance criteria passed; `WindowsUNCAdapter` implemented but real-UNC validation still pending client environment access.

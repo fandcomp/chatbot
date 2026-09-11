@@ -16,6 +16,7 @@ from app.parsing.models import DocumentNodeType
 from ._retrieval_fixtures import (
     resolve_organization_id,
     seed_active_document,
+    seed_lan_source_entry,
     seed_node_and_chunk,
 )
 
@@ -71,6 +72,84 @@ async def _seed_article(client_factory, payload: dict, status: DocumentLifecycle
         await db.commit()
 
     return client, document_id
+
+
+async def _seed_lan_sourced_article(client_factory, payload: dict, status: DocumentLifecycleStatus):
+    # LAN-M4: same seeding as _seed_article, but the version carries a real
+    # source_entry_id — proves retrieval/revocation never branch on document
+    # provenance (there is no such branch anywhere in the codebase; this is
+    # the regression test for that claim, not a claim on its own).
+    client = client_factory()
+    await client.post("/auth/register", json=payload)
+    ks_id = (await client.get("/knowledge-spaces")).json()[0]["id"]
+
+    async with async_session_factory() as db:
+        org_id = await resolve_organization_id(db, ks_id)
+        source_entry_id = await seed_lan_source_entry(db, org_id, ks_id)
+        document_id, version_id, region_id = await seed_active_document(
+            db, org_id, ks_id, status=status, source_entry_id=source_entry_id
+        )
+        await seed_node_and_chunk(
+            db,
+            org_id,
+            document_id,
+            version_id,
+            region_id,
+            node_type=DocumentNodeType.ARTICLE,
+            sequence_number=0,
+            original_text="Pasal 9\nKetentuan rahasia organisasi ini.",
+            structural_path_json=_ARTICLE_PATH,
+            structural_path_text="Pasal 9",
+            article_number="9",
+        )
+        await db.commit()
+
+    return client, document_id
+
+
+async def test_org_a_cannot_exact_match_org_bs_lan_sourced_article(client_factory) -> None:
+    # Arrange
+    client_a, _ = await _seed_lan_sourced_article(
+        client_factory, ORG_A_PAYLOAD, DocumentLifecycleStatus.ACTIVE
+    )
+    _, org_b_document_id = await _seed_lan_sourced_article(
+        client_factory, ORG_B_PAYLOAD, DocumentLifecycleStatus.ACTIVE
+    )
+
+    # Act
+    response = await client_a.post("/retrieval/search", json={"query": "Pasal 9"})
+
+    # Assert — identical guarantee to an uploaded document: org A never sees
+    # org B's LAN-sourced content.
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "EXACT_STRUCTURAL"
+    assert len(body["chunks"]) == 1
+    assert body["chunks"][0]["document_id"] != str(org_b_document_id)
+
+
+async def test_archiving_a_lan_sourced_document_revokes_it_immediately(client_factory) -> None:
+    # LAN-M4 (addendum §7): "revocation that takes effect immediately,
+    # independent of the ingestion cycle" — proves the existing archive
+    # endpoint already delivers this for a LAN-promoted document, with no
+    # dependency on a rescan/reconciliation job ever running.
+    client, document_id = await _seed_lan_sourced_article(
+        client_factory, ORG_A_PAYLOAD, DocumentLifecycleStatus.ACTIVE
+    )
+    precondition = await client.post("/retrieval/search", json={"query": "Pasal 9"})
+    assert precondition.json()["mode"] == "EXACT_STRUCTURAL"  # sanity check
+
+    # Act
+    archive_response = await client.post(f"/documents/{document_id}/archive")
+    with _mocked_voyage():
+        search_response = await client.post("/retrieval/search", json={"query": "Pasal 9"})
+
+    # Assert
+    assert archive_response.status_code == 200
+    assert archive_response.json()["status"] == "ARCHIVED"
+    body = search_response.json()
+    assert body["mode"] != "EXACT_STRUCTURAL"
+    assert body["chunks"] == []
 
 
 async def test_org_a_cannot_exact_match_org_bs_article(client_factory) -> None:
