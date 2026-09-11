@@ -2,6 +2,10 @@
 
 Operational guide for the Windows LAN archive source connector
 (`docs/ADDENDUM_LAN_ARCHIVE_4TB_COST_CONTROL.md`, `docs/adr/ADR-020-lan-archive-source-connector.md`).
+Covers registration and discovery (LAN-M1) specifically — for promotion,
+budget configuration, retrieval/access, backup/restore, rollback, and
+staged rollout across the whole pipeline, see
+`docs/evaluation/LAN_ARCHIVE_PILOT_PLAN.md`.
 
 ## Status: not yet field-validated
 
@@ -57,6 +61,12 @@ otherwise, and record that confirmation in `docs/LAN_ARCHIVE_PROGRESS.md`.
 - **File locks / in-progress copies**: LAN-M1 only catalogs metadata; it
   does not open file contents, so lock contention is not yet a concern.
   This becomes relevant starting LAN-M2 (snapshot/transfer).
+- **No "disable this source" endpoint**: registering a `SourceRoot` has no
+  corresponding disable/delete action today. If a source turns out to be
+  misconfigured, the mitigation is to stop triggering scans/promotions
+  against it and archive any already-promoted documents that shouldn't be
+  active (`POST /documents/{id}/archive`) — see
+  `docs/evaluation/LAN_ARCHIVE_PILOT_PLAN.md`'s rollback plan.
 
 ## Troubleshooting
 

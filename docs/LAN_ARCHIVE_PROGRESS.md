@@ -2,6 +2,42 @@
 
 Checkpoint doc for the LAN archive ingestion track (`docs/LAN_ARCHIVE_IMPLEMENTATION_PLAN.md`). Updated at the end of each milestone so the next session can resume without re-auditing from scratch.
 
+## LAN-M6: Pilot and operations guide — **partial, blocked on real client access**
+
+LAN-M6 depends on "a working LAN-M1..LAN-M5 pipeline **and client-provided access/credentials**" (implementation plan). The pipeline dependency is now satisfied (LAN-M1-M5 complete); the client-access dependency is not — no real Windows LAN/SMB share has ever been reachable from this dev environment, same blocker every prior milestone recorded.
+
+Scoped per an explicit decision with the user: write the deliverables that don't need real client data now (backup/restore procedures, rollback plan, staged production rollout guidance); leave sampling, real LAN throughput benchmarks, cost projection, and retrieval evaluation on real regulations explicitly blocked rather than faked with synthetic numbers presented as a pilot.
+
+### What was delivered
+
+- `docs/evaluation/LAN_ARCHIVE_PILOT_PLAN.md` — filled in (was a stub): backup/restore procedures per store (Postgres/MinIO/Qdrant/embedding cache/Redis, with which stores are derivable vs. not), a three-granularity rollback plan (document version / migration / crashed job), and a 5-phase staged rollout guide (dry-run discovery → small controlled promotion → budget-gated pilot scale → retrieval/access validation → full rollout) with exit criteria and rollback triggers per phase. The still-blocked items (sampling, benchmarks, cost projection, retrieval eval) remain explicitly recorded as blocked, not attempted.
+- `docs/operations/LAN_CONNECTOR_RUNBOOK.md` — added a pointer to the pilot plan (it was LAN-M1-scoped only and never updated for M2-M5) and documented a real gap found while writing this: **no endpoint exists to disable/delete a `SourceRoot`** once registered (`apps/api/app/sources/router.py` has create/list/scan/entries/promote, nothing to stop a misconfigured source). Recorded as a pre-flight check for Phase 0 of rollout, not silently assumed to exist.
+
+### Gap found while writing the rollout guidance (not caught in planning)
+
+Reservation/settlement (LAN-M5's `budget.py`) has no automatic recovery if a worker process is lost (not just a retried task) between `reserve_ingestion_budget` and `settle_usage`/`release_reservation` — the `usage_ledger_entries` row stays `RESERVED` indefinitely, permanently shrinking that org's budget headroom by the reserved amount. Celery's task-level retry doesn't cover a genuinely killed worker process. Recorded in the pilot plan's backup/restore section as a recommended periodic-reconciliation job before relying on the budget gate at real production volume — not built this pass, since it surfaced while documenting operational procedures, not while implementing LAN-M5 itself.
+
+### Files changed
+
+**Docs only — no code this pass:**
+- `docs/evaluation/LAN_ARCHIVE_PILOT_PLAN.md` — filled in per above
+- `docs/operations/LAN_CONNECTOR_RUNBOOK.md` — cross-reference + known-limitation addition
+- `docs/LAN_ARCHIVE_PROGRESS.md` (this file)
+
+### Explicitly deferred / blocked (recorded, not silently dropped)
+
+- **Representative sampling** (300-500 documents), **cost projection**, **real benchmarks** (OCR/embedding throughput, LAN transfer rate, chat latency idle-vs-active), **retrieval evaluation on real Indonesian regulatory queries** — all need real client access/data this environment doesn't have. See `docs/evaluation/LAN_ARCHIVE_PILOT_PLAN.md`'s "Blocked pending real client access/credentials" section.
+- **Automatic reconciliation for stranded `RESERVED` budget entries** — found and recorded above, not built.
+- **A `SourceRoot` disable/delete endpoint** — found and recorded above, not built (pre-existing gap since LAN-M1, only surfaced now while writing operational guidance).
+
+### Blockers
+
+- No real Windows LAN/SMB share reachable from this dev environment — same as every prior milestone. This is the actual, sole blocker on LAN-M6's remaining scope; nothing else is pending.
+
+### Next step
+
+LAN-M6's access-independent deliverables are complete. Its remaining scope (sampling, benchmarking, retrieval eval, cost projection) cannot proceed without client-provided LAN/SMB access and credentials — this is an external dependency, not an engineering task to pick up next. When real access becomes available: re-read `docs/evaluation/LAN_ARCHIVE_PILOT_PLAN.md`'s "Blocked" section and execute Phase 0 of the rollout guidance first (dry-run discovery), not a full sample promotion.
+
 ## LAN-M5: Ingestion budget control — **complete**
 
 Scoped to **backend cost control only, admin UI deferred** (a deliberate decision, confirmed before starting): `git log` confirmed no LAN-facing frontend exists yet for any milestone, so "admin UI" would be a brand-new surface, meaningfully separable from the part that actually prevents uncontrolled spend. This milestone builds the usage ledger, versioned pricing config, and an atomic admission-control gate in front of the only currently-paid ingestion call.
@@ -410,6 +446,7 @@ LAN-M2 is complete per its acceptance criteria. Per Operating Rule #3, **do not*
 
 ## Milestone history
 
+- **LAN-M6** — pilot/operations guide, partial: backup/restore, rollback plan, and staged rollout guidance written; sampling/benchmarking/retrieval-eval/cost-projection remain blocked on real client access. See above.
 - **LAN-M5** — ingestion budget control: usage ledger, versioned pricing config, atomic reserve/settle/release, budget-paused-not-failed jobs. Admin UI and chat-budget enforcement explicitly deferred. See acceptance criteria table above.
 - **LAN-M4** — end-to-end access/retrieval audit: verified (with regression tests, not just code reading) that tenant scoping and immediate revocation already work identically for LAN-sourced documents; viewer endpoint and Windows-ACL mode explicitly deferred. See acceptance criteria table above.
 - **LAN-M3** — DOCX parsing (page-optional pipeline generalization) and embedding cache. See acceptance criteria table above.
