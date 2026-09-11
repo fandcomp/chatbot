@@ -10,7 +10,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Protocol
+from typing import BinaryIO, Protocol
 
 
 class EntryAccessStatus(str, enum.Enum):
@@ -56,6 +56,21 @@ class HealthStatus:
     detail: str
 
 
+@dataclass(frozen=True)
+class StatResult:
+    """A single-file stat, distinct from a `DiscoveredEntry` (which is only
+    ever produced as part of a page during a scan) — LAN-M2's file-stability
+    check calls this twice, `SCAN_STABILITY_WINDOW_SECONDS` apart, comparing
+    two independent stats rather than trusting one scan's cached metadata.
+    `exists=False` covers the file having disappeared between promotion
+    request and staging attempt.
+    """
+
+    exists: bool
+    size_bytes: int | None
+    mtime: datetime | None
+
+
 class SourceAdapter(Protocol):
     def check_health(self) -> HealthStatus: ...
 
@@ -67,7 +82,12 @@ class SourceAdapter(Protocol):
         """
         ...
 
-    def open_stream(self, normalized_path: str):
-        """Unused until LAN-M2 (snapshot/transfer) — defined now so the
-        contract is stable when that milestone lands."""
+    def stat(self, normalized_path: str) -> StatResult:
+        """LAN-M2 — a fresh, independent stat of one file, used for the
+        before/after file-stability check around staging."""
+        ...
+
+    def open_stream(self, normalized_path: str) -> BinaryIO:
+        """LAN-M2 — a readable binary stream for staging. Callers are
+        responsible for closing it (use as a context manager)."""
         ...

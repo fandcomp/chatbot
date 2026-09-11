@@ -2,95 +2,106 @@
 
 Checkpoint doc for the LAN archive ingestion track (`docs/LAN_ARCHIVE_IMPLEMENTATION_PLAN.md`). Updated at the end of each milestone so the next session can resume without re-auditing from scratch.
 
-## LAN-M1: Audit, source foundation, catalog without AI cost — **complete**
+## LAN-M2: Selective snapshot and incremental sync — **complete**
 
 ### Acceptance criteria status
 
-| # | Criterion | Status |
-|---|---|---|
-| 1 | Migration applies cleanly | **Passed** — `alembic upgrade head` (revision `0faff961e56e`) applied cleanly on the dev DB, no changes to existing tables |
-| 2 | Local-fake source scan produces correct entries via admin API | **Passed** — `test_sources_rbac.py`, `test_sources_tasks.py` |
-| 3 | Offline source doesn't mark entries missing | **Passed** — `test_offline_source_does_not_touch_existing_entries` |
-| 4 | Partial subtree failure doesn't poison rest of scan | **Passed** — `test_one_inaccessible_subtree_does_not_poison_the_rest` |
-| 5 | Re-scan with no changes is a no-op (no new entries) | **Passed** — `test_rescan_with_no_changes_creates_no_new_entries` |
-| 6 | Discovery never calls provider/storage APIs | **Passed** — `test_catalog_only_scan_produces_entries_and_touches_no_provider` asserts `get_object_bytes` raises if called; also true by code inspection (no Docling/embedding/LLM/storage import in `sources_tasks.py` or `sources/` package) |
-| 7 | New endpoints tenant-scoped and role-gated | **Passed** — `test_sources_rbac.py` (6 tests: create requires OWNER/ADMIN, viewer can list but not scan, cross-org access is 404) |
-| 8 | No regression in existing suites | **Passed** — see Test commands and results below |
-| 9 | WindowsUNCAdapter exists, tested locally (not against real UNC) | **Implemented**, exercised only indirectly (shares `_filesystem_walk.py` with `LocalFakeAdapter`, which is directly tested) — **real-UNC validation explicitly pending**, see Blockers |
+| Criterion | Status |
+|---|---|
+| Promotion creates Document/DocumentVersion/ProcessingJob and enqueues the existing `verify_upload` | **Passed** — `test_promotion_creates_document_version_and_enqueues_verify_upload` |
+| Duplicate-content promotion links to the existing version, no new storage write | **Passed** — `test_duplicate_content_links_to_existing_version_without_new_storage_write` |
+| Unsupported extension (e.g. legacy `.doc`) fails cleanly without staging | **Passed** — `test_unsupported_extension_fails_without_staging` |
+| Disk watermark pauses (not fails) and is retryable | **Passed** — `test_disk_watermark_pauses_rather_than_fails` |
+| A crashed worker's stale lease is reclaimed by a later attempt | **Passed** — `test_stale_lease_is_reclaimed_by_a_later_attempt` |
+| File-stability check (two independent stats) works and detects changes | **Passed** — `test_check_file_stable_*` (test_promotion.py) |
+| Streaming staging computes correct hash/size without loading the whole file eagerly beforehand | **Passed** — `test_stage_to_temp_file_computes_correct_hash_and_size` |
+| Oversized file during staging is rejected and cleaned up | **Passed** — `test_stage_to_temp_file_raises_and_cleans_up_when_too_large` |
+| No regression in existing suites (LAN-M1 + M0-M15 core) | **Passed** — see Test commands and results below |
+
+### Key design decision confirmed during implementation
+
+Promotion reuses the **existing** `apps/api/app/ingestion/router.py::_create_version_and_job` shape exactly (Document → DocumentVersion(UPLOADED) → ProcessingJob(QUEUED) → enqueue `verify_upload`) rather than building a parallel pipeline. M3-M6 (parse/interpret/chunk/index) needed **zero changes** — confirmed by the fact that a promoted PDF flows into the same `verify_upload` task the HTTP upload path already uses and is fully unit-testable without touching that pipeline at all.
+
+### Gap found and fixed during this milestone (not caught in planning)
+
+`SourceRoot` had no `knowledge_space_id` in LAN-M1 — but `Document.knowledge_space_id` is `NOT NULL`, so promotion had nowhere to put a new Document. Added `source_roots.knowledge_space_id` (required at creation, validated against the same org) via this milestone's migration. Recorded here rather than silently folded into "LAN-M1 was already correct" — it wasn't; LAN-M1's `CreateSourceRequest`/tests needed updating too (`apps/api/tests/unit/test_sources_rbac.py`).
 
 ### Files changed
 
-**Docs (new):**
-- `docs/adr/ADR-020-lan-archive-source-connector.md`
-- `docs/ADDENDUM_LAN_ARCHIVE_4TB_COST_CONTROL.md`
-- `docs/LAN_ARCHIVE_IMPLEMENTATION_PLAN.md`
+**Docs:**
 - `docs/LAN_ARCHIVE_PROGRESS.md` (this file)
-- `docs/operations/LAN_CONNECTOR_RUNBOOK.md`
-- `docs/evaluation/LAN_ARCHIVE_PILOT_PLAN.md` (stub, LAN-M6)
-- `CLAUDE.md` (pointer section added)
 
-**apps/api (new):**
-- `apps/api/app/sources/{__init__,models,schemas,router}.py`
-- `apps/api/tests/unit/test_sources_rbac.py`
-- `apps/api/alembic/versions/0faff961e56e_add_lan_archive_source_registry.py`
+**apps/api:**
+- `apps/api/app/sources/models.py` — added `PromotionRecord`/`PromotionStatus`, added `SourceRoot.knowledge_space_id`
+- `apps/api/app/sources/schemas.py` — added promotion request/response schemas, `knowledge_space_id`, `promotion_status`
+- `apps/api/app/sources/router.py` — added `POST /sources/{id}/entries/promote`, `knowledge_space_id` validation, `promotion_status` in entries listing
+- `apps/api/app/documents/models.py` — added `DocumentVersion.source_entry_id` (nullable, NULL for ordinary uploads)
+- `apps/api/app/core/tasks.py` — added `enqueue_promote_source_entry`
+- `apps/api/alembic/versions/a7057580f523_add_lan_archive_promotion_records.py` — new migration
+- `apps/api/tests/unit/test_sources_rbac.py` — updated for `knowledge_space_id` requirement
 
-**apps/api (modified):**
-- `apps/api/app/core/config.py` — `MAX_FILE_SIZE_MB` 50→100 (documented as per-file), added `CONNECTOR_ENABLED`/`CONNECTOR_ALLOWED_HOSTS`/`SCAN_PAGE_SIZE`/`SCAN_STABILITY_WINDOW_SECONDS`
-- `apps/api/app/core/tasks.py` — added `enqueue_scan_source`
-- `apps/api/app/main.py` — registered `sources_router`
-- `apps/api/alembic/env.py` — imports new models for autogenerate
-- `.env.example` — new connector config vars documented as pilot defaults
+**workers/document_worker:**
+- `workers/document_worker/app/sources/adapter.py` — added `stat()`/real `open_stream()` to the `Protocol`
+- `workers/document_worker/app/sources/local_fake_adapter.py`, `windows_unc_adapter.py` — implemented `stat()`/`open_stream()`
+- `workers/document_worker/app/sources/promotion.py` — new: staging/hashing/stability/dedup/watermark helpers
+- `workers/document_worker/app/sources_tasks.py` — added `promote_source_entry` task, lease-claim logic
+- `workers/document_worker/app/storage.py` — added `put_object_stream`, `build_original_object_key` (worker's first write path to object storage)
+- `workers/document_worker/app/database.py` — added `promotion_records` mirror; extended `documents`/`document_versions`/`source_roots` mirrors with columns needed for INSERT
+- `workers/document_worker/app/core/config.py` — added `SCAN_STABILITY_WINDOW_SECONDS` (missed in LAN-M1 — worker actually needs it, apps/api's copy was never load-bearing), `STAGING_DIR`, `MIN_FREE_DISK_MB`, `PROMOTION_LEASE_SECONDS`
+- `workers/document_worker/tests/test_promotion.py` — new, 13 pure unit tests
+- `workers/document_worker/tests/test_sources_tasks.py` — added 5 promotion integration tests, updated fixtures for `knowledge_space_id`
 
-**workers/document_worker (new):**
-- `workers/document_worker/app/sources/{__init__,adapter,_filesystem_walk,local_fake_adapter,windows_unc_adapter,discovery}.py`
-- `workers/document_worker/app/sources_tasks.py`
-- `workers/document_worker/tests/test_sources_walk.py`
-- `workers/document_worker/tests/test_sources_tasks.py`
+### Bugs caught and fixed during implementation (not just at the end)
 
-**workers/document_worker (modified):**
-- `workers/document_worker/app/database.py` — added `source_roots`/`scan_runs`/`source_entries` Core Table mirrors
-- `workers/document_worker/app/celery_app.py` — registers `sources_tasks`
-- `workers/document_worker/app/core/config.py` — added `CONNECTOR_ALLOWED_HOSTS`/`SCAN_PAGE_SIZE`
+1. Worker's `source_roots` Core Table mirror omitted `source_type` — the promotion task needs to *read* it to pick an adapter (LAN-M1 only ever needed to *write* health, so this was missed). Fixed by adding the column to the mirror.
+2. Real circular import: `sources_tasks.py` importing `from app.tasks import verify_upload` at module level broke whenever `app.tasks` was the first module imported (e.g. a test importing directly from it) — `app.tasks` imports `app.celery_app`, which imports `sources_tasks`, which needs `app.tasks` back before it's finished loading. Fixed with a lazy (in-function) import. Verified against **both** import orders after the fix.
+3. `SCAN_STABILITY_WINDOW_SECONDS` was defined in LAN-M1 only on apps/api's config (marked "unused until LAN-M2") — but the worker is what actually needed it, and it was never added there. Caught by an `AttributeError` at test time, not by inspection.
 
 ### Migrations
 
-`0faff961e56e_add_lan_archive_source_registry.py` — additive only, adds `source_roots`, `scan_runs`, `source_entries` tables plus 5 new Postgres enum types (`lan_source_type`, `lan_source_health`, `lan_scan_run_status`, `lan_discovery_status`, `lan_entry_access_status`). No existing table touched. Applied successfully against the dev DB (`alembic upgrade head`, `d8a8dfc7497c` → `0faff961e56e`).
+`a7057580f523_add_lan_archive_promotion_records.py` — additive: new `promotion_records` table, new `lan_promotion_status` enum, new nullable `document_versions.source_entry_id` column (+FK), new required `source_roots.knowledge_space_id` column (+FK) — safe because `source_roots` had zero rows at migration time (verified before writing the migration). No existing table's existing columns touched. Applied successfully (`0faff961e56e` → `a7057580f523`).
 
 ### Test commands and results
 
 ```
 cd apps/api && uv run pytest -q
-  -> 203 passed (was 197 before this milestone; +6 new RBAC tests)
+  -> 203 passed (unchanged from LAN-M1 — this milestone's apps/api changes
+     are schema/router additions, covered by the updated RBAC test file)
 
 cd workers/document_worker && uv run pytest -q --ignore=tests/test_parse_document.py \
   --ignore=tests/test_pipeline.py --ignore=tests/test_region_segmenter.py --ignore=tests/test_tree_builder.py
-  -> 89 passed, 1 skipped (was 80 passed, 1 skipped before; +9 new LAN-M1 tests)
-  (the 1 skip is a pre-existing symlink-creation-permission skip, unrelated —
-   also hit by this milestone's own symlink-traversal test on this machine)
+  -> 107 passed, 1 skipped (was 89 passed, 1 skipped after LAN-M1; +13 test_promotion.py
+     + 5 new promote_source_entry integration tests)
 
 cd workers/document_worker && uv run pytest tests/test_parse_document.py tests/test_pipeline.py \
   tests/test_region_segmenter.py tests/test_tree_builder.py -q
-  -> 18 passed, 27 warnings in 324.70s — run separately per this repo's own
-     documented Docling-suite segfault-risk note (memory: windows-toolchain-
-     quirks); no segfault this run, clean pass. Untouched by this milestone's
-     changes (LAN-M1 never modifies parsing code), run purely as a
-     regression check.
+  -> 18 passed (same known-harmless "Windows fatal exception: access violation"
+     noise from docling_parse's internal timing thread, per windows-toolchain-
+     quirks memory — did not fail the run)
 ```
+
+Test speed note: the real file-stability check sleeps `SCAN_STABILITY_WINDOW_SECONDS`
+between its two stats (30s default) — an autouse fixture in
+`test_sources_tasks.py` patches this to 0 for the DB-integration tests (real
+timing is covered separately, fast, in `test_promotion.py`'s own
+`check_file_stable` tests). Without that fixture the suite took 2:43 instead
+of 43s for no additional coverage.
 
 ### Assumptions not yet validated
 
-- Production OS/deployment shape for `workers/document_worker` is unknown — ADR-020's choice of `WindowsUNCAdapter` assumes the worker keeps running natively on Windows, matching today's actual deployment (confirmed via ADR-016 and this session's own tooling). If production ever containerizes the worker on Linux, ADR-020 must be revisited.
-- Real Windows LAN/SMB topology, credentials, and scale are all "belum diketahui" per the client info table in `PROMPT_CLAUDE_CODE_UPDATE_CHATBOT_4TB.md` — LAN-M1 is validated only against `LocalFakeAdapter`/a real local filesystem, never a real share.
-- Missing-file detection (`MISSING_CANDIDATE`/`CONFIRMED_MISSING` transitions) is deliberately **not implemented** in LAN-M1 — `SourceEntry.discovery_status` is only ever set to `PRESENT` today. The addendum's grace-period policy for confirming a file gone needs a decision before this is built; scoped explicitly out of LAN-M1's 9 acceptance criteria.
+- Everything already listed under LAN-M1 (production OS/deployment shape, real Windows LAN/SMB topology) still applies — promotion via `WindowsUNCAdapter` is exercised only through the shared `_filesystem_walk`/adapter code paths that `LocalFakeAdapter` already covers, never a real share.
+- The blocking-sleep file-stability check (`time.sleep` inside the Celery task, not a two-phase scheduled follow-up) is a known, documented scalability trade-off — fine for pilot-scale promotion volume, holds a worker slot for the stability window otherwise. Revisit if a pilot needs higher promotion throughput.
+- Missing-file detection (carried over from LAN-M1) is still not implemented — still requires a grace-period policy decision before it's built.
 
 ### Blockers
 
-- No real Windows LAN/SMB share reachable from this dev environment — `WindowsUNCAdapter` cannot be field-validated until client provides access. Tracked in `docs/operations/LAN_CONNECTOR_RUNBOOK.md`.
+- Same as LAN-M1: no real Windows LAN/SMB share reachable from this dev environment.
 
 ### Next step
 
-LAN-M1 is complete per its acceptance criteria. Per Operating Rule #3 (one milestone at a time), **do not** proceed to LAN-M2 automatically — the next session should re-read this file plus `docs/LAN_ARCHIVE_IMPLEMENTATION_PLAN.md`'s LAN-M2 section before starting selective-snapshot/incremental-sync work.
+LAN-M2 is complete per its acceptance criteria. Per Operating Rule #3, **do not** proceed to LAN-M3 (PDF/Word parsing, versioned index) automatically — re-read this file plus the implementation plan's LAN-M3 section first.
 
 ## Milestone history
 
-- **LAN-M1** (this session) — source registry, adapter contract, catalog-only discovery. See acceptance criteria table above.
+- **LAN-M2** — selective snapshot/promotion into the existing document pipeline, streaming transfer, dedup, disk watermark, crash-safe lease-based idempotency. See acceptance criteria table above.
+- **LAN-M1** — source registry, adapter contract, catalog-only discovery. 9/9 acceptance criteria passed; `WindowsUNCAdapter` implemented but real-UNC validation still pending client environment access.

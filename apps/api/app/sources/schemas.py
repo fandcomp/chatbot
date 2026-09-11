@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.sources.models import (
     DiscoveryStatus,
     EntryAccessStatus,
+    PromotionStatus,
     ScanRunStatus,
     SourceHealth,
     SourceType,
@@ -14,6 +15,7 @@ from app.sources.models import (
 
 class CreateSourceRequest(BaseModel):
     source_type: SourceType
+    knowledge_space_id: uuid.UUID
     display_name: str = Field(min_length=1, max_length=255)
     root_path: str = Field(min_length=1, max_length=1024)
     allowed_subtrees: list[str] | None = None
@@ -23,6 +25,7 @@ class CreateSourceRequest(BaseModel):
 class SourceRootPublic(BaseModel):
     id: uuid.UUID
     source_type: SourceType
+    knowledge_space_id: uuid.UUID
     display_name: str
     root_path: str
     allowed_subtrees: list[str] | None
@@ -55,4 +58,23 @@ class SourceEntryPublic(BaseModel):
     mtime: datetime | None
     discovery_status: DiscoveryStatus
     access_status: EntryAccessStatus
+    promotion_status: PromotionStatus | None
     updated_at: datetime
+
+
+class PromoteEntriesRequest(BaseModel):
+    source_entry_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+
+
+class PromotionRecordPublic(BaseModel):
+    id: uuid.UUID
+    source_entry_id: uuid.UUID
+    status: PromotionStatus
+    document_id: uuid.UUID | None
+    document_version_id: uuid.UUID | None
+    attempts: int
+    error_message: str | None
+
+
+class PromoteEntriesResponse(BaseModel):
+    created: list[PromotionRecordPublic]

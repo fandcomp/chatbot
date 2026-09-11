@@ -17,10 +17,12 @@ Known, documented limitations (not silently mishandled):
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
+from typing import BinaryIO
 
 from app.core.config import settings
 from app.sources._filesystem_walk import paged_walk
-from app.sources.adapter import HealthStatus, ScanPage
+from app.sources.adapter import HealthStatus, ScanPage, StatResult
 
 
 class UNCHostNotAllowedError(Exception):
@@ -68,5 +70,18 @@ class WindowsUNCAdapter:
     def paged_scan(self, subtree: str, cursor: dict | None, page_size: int) -> ScanPage:
         return paged_walk(self._root_path, subtree, cursor, page_size)
 
-    def open_stream(self, normalized_path: str):
-        raise NotImplementedError("open_stream is unused until LAN-M2")
+    def stat(self, normalized_path: str) -> StatResult:
+        full_path = os.path.join(self._root_path, normalized_path)
+        try:
+            result = os.stat(full_path, follow_symlinks=False)
+        except OSError:
+            return StatResult(exists=False, size_bytes=None, mtime=None)
+        return StatResult(
+            exists=True,
+            size_bytes=result.st_size,
+            mtime=datetime.fromtimestamp(result.st_mtime, tz=UTC),
+        )
+
+    def open_stream(self, normalized_path: str) -> BinaryIO:
+        full_path = os.path.join(self._root_path, normalized_path)
+        return open(full_path, "rb")

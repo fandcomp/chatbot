@@ -10,18 +10,49 @@ Catalog-only: never calls Docling, an embedding gateway, an LLM gateway, or
 from __future__ import annotations
 
 import asyncio
+import os
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import insert, select, update
 
 from app.celery_app import celery_app
 from app.core.config import settings
-from app.database import async_session_factory, scan_runs, source_entries, source_roots
+from app.database import (
+    async_session_factory,
+    document_versions,
+    documents,
+    processing_jobs,
+    promotion_records,
+    scan_runs,
+    source_entries,
+    source_roots,
+)
 from app.sources.adapter import EntryAccessStatus
 from app.sources.discovery import run_one_page
 from app.sources.local_fake_adapter import LocalFakeAdapter
+from app.sources.promotion import (
+    ALLOWED_EXTENSIONS,
+    DiskWatermarkError,
+    FileTooLargeError,
+    FileUnstableError,
+    check_disk_watermark,
+    check_file_stable,
+    extension_for_path,
+    mime_type_for_extension,
+    sanitize_filename,
+    stage_to_temp_file,
+)
 from app.sources.windows_unc_adapter import WindowsUNCAdapter
+from app.storage import build_original_object_key, put_object_stream
+
+# Deliberately NOT imported at module level: app.tasks imports
+# app.celery_app, which imports this module (to register its tasks) — a
+# module-level `from app.tasks import verify_upload` here creates a real
+# circular import whenever app.tasks happens to be the first of the two
+# modules Python starts loading (e.g. a test importing from app.tasks
+# directly). Importing lazily, inside the function that actually calls it,
+# sidesteps the cycle since by call time both modules have finished loading.
 
 _MAX_PAGES_PER_TASK_INVOCATION = 200
 """Safety bound, not a design limit: re-enqueues itself if a scan is still
@@ -195,3 +226,263 @@ async def _scan_source_async(scan_run_id_str: str) -> None:
 )
 def scan_source(self, scan_run_id: str) -> None:
     asyncio.run(_scan_source_async(scan_run_id))
+
+
+# ---------------------------------------------------------------------------
+# LAN-M2: promote_source_entry
+# ---------------------------------------------------------------------------
+
+
+async def _claim_lease(promotion_record_id: uuid.UUID, lease_seconds: int) -> dict | None:
+    """Atomic claim: a crashed worker's lease is simply reclaimed once it
+    expires — no separate lock service (see PromotionRecord's own
+    docstring). Returns None if another worker currently holds the lease or
+    this record is already in a terminal state (idempotent no-op)."""
+    lease_owner = uuid.uuid4()
+    now = datetime.now(UTC)
+    async with async_session_factory() as session:
+        result = await session.execute(
+            update(promotion_records)
+            .where(
+                promotion_records.c.id == promotion_record_id,
+                promotion_records.c.status.notin_(["COMPLETED", "DUPLICATE_LINKED"]),
+                (promotion_records.c.lease_expires_at.is_(None))
+                | (promotion_records.c.lease_expires_at < now),
+            )
+            .values(
+                lease_owner=lease_owner,
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+                attempts=promotion_records.c.attempts + 1,
+            )
+            .returning(promotion_records.c.id)
+        )
+        claimed = result.scalar_one_or_none()
+        await session.commit()
+        if claimed is None:
+            return None
+        row = (
+            await session.execute(
+                select(promotion_records).where(promotion_records.c.id == promotion_record_id)
+            )
+        ).mappings().one()
+        return dict(row)
+
+
+async def _set_promotion_status(
+    promotion_record_id: uuid.UUID, status: str, error_message: str | None = None
+) -> None:
+    async with async_session_factory() as session:
+        await session.execute(
+            update(promotion_records)
+            .where(promotion_records.c.id == promotion_record_id)
+            .values(status=status, error_message=error_message)
+        )
+        await session.commit()
+
+
+async def _find_duplicate_version(organization_id: uuid.UUID, file_hash: str) -> dict | None:
+    async with async_session_factory() as session:
+        row = (
+            await session.execute(
+                select(document_versions.c.id, document_versions.c.document_id).where(
+                    document_versions.c.organization_id == organization_id,
+                    document_versions.c.file_hash == file_hash,
+                )
+            )
+        ).mappings().first()
+        return dict(row) if row else None
+
+
+async def _link_duplicate(
+    promotion_record_id: uuid.UUID, document_id: uuid.UUID, document_version_id: uuid.UUID
+) -> None:
+    async with async_session_factory() as session:
+        await session.execute(
+            update(promotion_records)
+            .where(promotion_records.c.id == promotion_record_id)
+            .values(
+                status="DUPLICATE_LINKED",
+                document_id=document_id,
+                document_version_id=document_version_id,
+                error_message=None,
+            )
+        )
+        await session.commit()
+
+
+async def _create_document_and_version(
+    organization_id: uuid.UUID,
+    knowledge_space_id: uuid.UUID,
+    source_entry_id: uuid.UUID,
+    sanitized_filename: str,
+    mime_type: str,
+    size_bytes: int,
+    file_hash: str,
+) -> dict:
+    """Creates a brand-new Document (version 1) — LAN-M2 does not attempt
+    to reconcile a promoted file against an existing document by title/
+    path; that is a later-milestone incremental-sync refinement, not this
+    one's scope."""
+    document_id = uuid.uuid4()
+    version_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+    async with async_session_factory() as session:
+        await session.execute(
+            insert(documents).values(
+                id=document_id,
+                organization_id=organization_id,
+                title=sanitized_filename,
+                knowledge_space_id=knowledge_space_id,
+            )
+        )
+        storage_key = build_original_object_key(
+            organization_id, document_id, version_id, sanitized_filename
+        )
+        await session.execute(
+            insert(document_versions).values(
+                id=version_id,
+                organization_id=organization_id,
+                document_id=document_id,
+                version_number=1,
+                file_hash=file_hash,
+                original_filename=sanitized_filename,
+                mime_type=mime_type,
+                size_bytes=size_bytes,
+                source_entry_id=source_entry_id,
+                storage_path=storage_key,
+                status="UPLOADED",
+            )
+        )
+        await session.execute(
+            insert(processing_jobs).values(
+                id=job_id,
+                organization_id=organization_id,
+                document_version_id=version_id,
+                status="QUEUED",
+                attempts=0,
+            )
+        )
+        await session.execute(
+            update(promotion_records)
+            .where(promotion_records.c.source_entry_id == source_entry_id)
+            .values(
+                status="COMPLETED",
+                document_id=document_id,
+                document_version_id=version_id,
+                error_message=None,
+            )
+        )
+        await session.commit()
+    return {
+        "document_id": document_id,
+        "version_id": version_id,
+        "job_id": job_id,
+        "storage_key": storage_key,
+    }
+
+
+async def _promote_source_entry_async(self, promotion_record_id_str: str) -> None:
+    from app.tasks import verify_upload  # see module-level comment on why this is lazy
+
+    promotion_record_id = uuid.UUID(promotion_record_id_str)
+
+    record = await _claim_lease(promotion_record_id, settings.PROMOTION_LEASE_SECONDS)
+    if record is None:
+        # Already completed/duplicate-linked, or another worker holds the
+        # lease right now — safe, idempotent no-op either way.
+        return
+
+    async with async_session_factory() as session:
+        entry_row = (
+            await session.execute(
+                select(source_entries).where(source_entries.c.id == record["source_entry_id"])
+            )
+        ).mappings().one()
+        source_row = (
+            await session.execute(
+                select(source_roots).where(source_roots.c.id == entry_row["source_root_id"])
+            )
+        ).mappings().one()
+
+    normalized_path = entry_row["normalized_path"]
+    extension = extension_for_path(normalized_path)
+    if extension not in ALLOWED_EXTENSIONS:
+        await _set_promotion_status(
+            promotion_record_id,
+            "FAILED",
+            f"Unsupported file type {extension!r} — only PDF/DOCX are supported "
+            "until LAN-M3 adds DOC/legacy parsing.",
+        )
+        return
+
+    try:
+        check_disk_watermark(settings.STAGING_DIR, settings.MIN_FREE_DISK_MB)
+    except DiskWatermarkError as exc:
+        await _set_promotion_status(promotion_record_id, "PAUSED_CAPACITY", str(exc))
+        self.retry(exc=exc, countdown=60)
+
+    adapter = _build_adapter(source_row["source_type"], source_row["root_path"])
+
+    await _set_promotion_status(promotion_record_id, "STABILITY_WAIT")
+    try:
+        check_file_stable(adapter, normalized_path, settings.SCAN_STABILITY_WINDOW_SECONDS)
+    except (FileUnstableError, FileNotFoundError) as exc:
+        await _set_promotion_status(promotion_record_id, "STABILITY_WAIT", str(exc))
+        self.retry(exc=exc, countdown=30)
+
+    await _set_promotion_status(promotion_record_id, "STAGING")
+    max_size_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+    try:
+        staged = stage_to_temp_file(adapter, normalized_path, settings.STAGING_DIR, max_size_bytes)
+    except FileTooLargeError as exc:
+        await _set_promotion_status(promotion_record_id, "FAILED", str(exc))
+        return
+
+    try:
+        # Re-verify after transfer — a file that changed mid-copy must
+        # never become a published version (addendum §6).
+        post_stat = adapter.stat(normalized_path)
+        pre_stat_matches = (
+            post_stat.exists
+            and post_stat.size_bytes == staged.size_bytes
+        )
+        if not pre_stat_matches:
+            raise FileUnstableError(normalized_path)
+
+        duplicate = await _find_duplicate_version(source_row["organization_id"], staged.sha256_hex)
+        if duplicate is not None:
+            await _link_duplicate(
+                promotion_record_id, duplicate["document_id"], duplicate["id"]
+            )
+            return
+
+        sanitized_filename = sanitize_filename(normalized_path)
+        mime_type = mime_type_for_extension(extension)
+        created = await _create_document_and_version(
+            organization_id=source_row["organization_id"],
+            knowledge_space_id=source_row["knowledge_space_id"],
+            source_entry_id=entry_row["id"],
+            sanitized_filename=sanitized_filename,
+            mime_type=mime_type,
+            size_bytes=staged.size_bytes,
+            file_hash=staged.sha256_hex,
+        )
+        with open(staged.temp_path, "rb") as fileobj:
+            put_object_stream(created["storage_key"], fileobj, mime_type)
+        verify_upload.delay(str(created["job_id"]))
+    except FileUnstableError as exc:
+        await _set_promotion_status(promotion_record_id, "STABILITY_WAIT", str(exc))
+        self.retry(exc=exc, countdown=30)
+    finally:
+        if os.path.exists(staged.temp_path):
+            os.remove(staged.temp_path)
+
+
+@celery_app.task(
+    bind=True,
+    name="document_worker.promote_source_entry",
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 5},
+)
+def promote_source_entry(self, promotion_record_id: str) -> None:
+    asyncio.run(_promote_source_entry_async(self, promotion_record_id))

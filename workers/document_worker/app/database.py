@@ -74,6 +74,11 @@ document_versions = Table(
     Column("document_id", UUID(as_uuid=True)),
     Column("file_hash", String(64)),
     Column("original_filename", String(255)),
+    # LAN-M2: needed to INSERT a version (the worker now creates these
+    # itself for a promoted LAN file, not just read/update them).
+    Column("mime_type", String(100)),
+    Column("size_bytes", Integer),
+    Column("source_entry_id", UUID(as_uuid=True)),
     Column("storage_path", String(1024)),
     Column("status", _document_lifecycle_status),
     # M6: index_document's Qdrant payload includes the source version number.
@@ -82,11 +87,13 @@ document_versions = Table(
 )
 
 # M5/M6: title (contextual_text rendering) + knowledge_space_id (M6 payload
-# field) — this worker never writes to `documents`, it only reads both.
+# field). LAN-M2 adds organization_id since the worker now INSERTs a new
+# Document row itself for a promoted LAN file (previously read-only here).
 documents = Table(
     "documents",
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("organization_id", UUID(as_uuid=True)),
     Column("title", String(255)),
     Column("knowledge_space_id", UUID(as_uuid=True)),
 )
@@ -350,15 +357,21 @@ _lan_entry_access_status = ENUM(
     "OK", "ACCESS_DENIED", "NETWORK_ERROR", "NOT_FOUND",
     name="lan_entry_access_status", create_type=False,
 )
+_lan_promotion_status = ENUM(
+    "QUEUED", "STABILITY_WAIT", "STAGING", "DUPLICATE_LINKED", "COMPLETED",
+    "FAILED", "PAUSED_CAPACITY", name="lan_promotion_status", create_type=False,
+)
 
 # LAN-M1 (ADR-020) — apps/api creates source_roots and owns source_type/
-# root_path/allowed_subtrees; this worker reads those to pick and configure
-# an adapter, and is the sole writer of health/health_checked_at.
+# root_path/allowed_subtrees/knowledge_space_id; this worker reads those to
+# pick/configure an adapter and know where a promotion lands, and is the
+# sole writer of health/health_checked_at.
 source_roots = Table(
     "source_roots",
     metadata,
     Column("id", UUID(as_uuid=True), primary_key=True),
     Column("organization_id", UUID(as_uuid=True)),
+    Column("knowledge_space_id", UUID(as_uuid=True)),
     Column("source_type", _lan_source_type),
     Column("root_path", String(1024)),
     Column("allowed_subtrees", JSONB),
@@ -394,6 +407,24 @@ source_entries = Table(
     Column("discovery_status", _lan_discovery_status),
     Column("access_status", _lan_entry_access_status),
     Column("created_at", DateTime(timezone=True)),
+    Column("updated_at", DateTime(timezone=True)),
+)
+
+# LAN-M2 — this worker is the sole writer end-to-end (apps/api only creates
+# the initial QUEUED row and reads status back for the entries list).
+promotion_records = Table(
+    "promotion_records",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("organization_id", UUID(as_uuid=True)),
+    Column("source_entry_id", UUID(as_uuid=True)),
+    Column("document_id", UUID(as_uuid=True)),
+    Column("document_version_id", UUID(as_uuid=True)),
+    Column("status", _lan_promotion_status),
+    Column("lease_owner", UUID(as_uuid=True)),
+    Column("lease_expires_at", DateTime(timezone=True)),
+    Column("attempts", Integer),
+    Column("error_message", String(2048)),
     Column("updated_at", DateTime(timezone=True)),
 )
 

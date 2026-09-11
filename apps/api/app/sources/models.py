@@ -71,6 +71,12 @@ class SourceRoot(Base):
     organization_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
     )
+    # LAN-M2: every promoted document needs a knowledge space home
+    # (Document.knowledge_space_id is NOT NULL) — required at creation,
+    # not deferred, since there is no sensible "promote to nowhere" default.
+    knowledge_space_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_spaces.id"), nullable=False
+    )
     source_type: Mapped[SourceType] = mapped_column(
         SAEnum(SourceType, name="lan_source_type"), nullable=False
     )
@@ -180,3 +186,76 @@ class ScanRun(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PromotionStatus(str, enum.Enum):
+    """LAN-M2 (addendum §6, §7 "Ingestion" status) — tracks one SourceEntry's
+    handoff into the existing Document/DocumentVersion/ProcessingJob
+    pipeline. Distinct from ProcessingJob's own status, which only starts
+    existing once a DocumentVersion row exists — this status covers the
+    period *before* that, including retryable pre-conditions (an unstable
+    file, a full disk) that are not failures.
+    """
+
+    QUEUED = "QUEUED"
+    STABILITY_WAIT = "STABILITY_WAIT"
+    STAGING = "STAGING"
+    DUPLICATE_LINKED = "DUPLICATE_LINKED"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    PAUSED_CAPACITY = "PAUSED_CAPACITY"
+
+
+class PromotionRecord(Base):
+    """One (source_entry_id) can have at most one active promotion — the
+    unique constraint below is the idempotency guard: re-requesting
+    promotion of an already-QUEUED/COMPLETED entry does not create a
+    second row or a second `verify_upload` enqueue.
+    """
+
+    __tablename__ = "promotion_records"
+    __table_args__ = (
+        UniqueConstraint("source_entry_id", name="uq_promotion_record_source_entry"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+    )
+    source_entry_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("source_entries.id"), nullable=False
+    )
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id"), nullable=True
+    )
+    document_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("document_versions.id"), nullable=True
+    )
+    status: Mapped[PromotionStatus] = mapped_column(
+        SAEnum(PromotionStatus, name="lan_promotion_status"),
+        nullable=False,
+        default=PromotionStatus.QUEUED,
+    )
+    # Crash-recovery fencing (closes the gap LAN-M1's audit flagged — no
+    # existing pipeline task has lease/heartbeat protection). A worker
+    # claims this row with `UPDATE ... WHERE lease_expires_at < now() OR
+    # lease_owner IS NULL`; a crashed worker's stale lease is simply
+    # reclaimed by the next attempt once it expires, no separate lock
+    # service needed.
+    lease_owner: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

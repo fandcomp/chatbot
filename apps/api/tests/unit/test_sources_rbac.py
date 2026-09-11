@@ -33,10 +33,12 @@ async def _create_member(owner_client: AsyncClient, email: str, role: str) -> No
 
 
 async def _create_source(client: AsyncClient) -> str:
+    space_id = (await client.get("/knowledge-spaces")).json()[0]["id"]
     response = await client.post(
         "/sources",
         json={
             "source_type": "LOCAL_FAKE",
+            "knowledge_space_id": space_id,
             "display_name": "Test LAN Source",
             "root_path": "/tmp/does-not-matter-for-this-test",
         },
@@ -47,11 +49,13 @@ async def _create_source(client: AsyncClient) -> str:
 async def test_owner_can_create_and_list_a_source(client_factory) -> None:
     owner = client_factory()
     await owner.post("/auth/register", json=REGISTER_PAYLOAD)
+    space_id = (await owner.get("/knowledge-spaces")).json()[0]["id"]
 
     create_response = await owner.post(
         "/sources",
         json={
             "source_type": "LOCAL_FAKE",
+            "knowledge_space_id": space_id,
             "display_name": "Archive Share",
             "root_path": "/mnt/archive",
         },
@@ -72,10 +76,16 @@ async def test_editor_cannot_create_a_source(client_factory) -> None:
     await editor.post(
         "/auth/login", json={"email": "editor@acme-regulatory.io", "password": "supersecret123"}
     )
+    space_id = (await owner.get("/knowledge-spaces")).json()[0]["id"]
 
     response = await editor.post(
         "/sources",
-        json={"source_type": "LOCAL_FAKE", "display_name": "x", "root_path": "/tmp/x"},
+        json={
+            "source_type": "LOCAL_FAKE",
+            "knowledge_space_id": space_id,
+            "display_name": "x",
+            "root_path": "/tmp/x",
+        },
     )
 
     assert response.status_code == 403

@@ -43,6 +43,19 @@ class Settings(BaseSettings):
     # creation.
     CONNECTOR_ALLOWED_HOSTS: str = ""
     SCAN_PAGE_SIZE: int = 500
+    # LAN-M2 — this worker is the one that actually performs the file-
+    # stability check (mirrors apps/api/app/core/config.py's own copy,
+    # which is defined there but currently unused by apps/api itself).
+    SCAN_STABILITY_WINDOW_SECONDS: int = 30
+    # Mirrors apps/api/app/core/config.py's own MAX_FILE_SIZE_MB — the
+    # worker enforces this itself during staging (LAN-M2) since it never
+    # goes through apps/api's upload validation path.
+    MAX_FILE_SIZE_MB: int = 100
+
+    # LAN-M2 (promotion/staging) — pilot defaults, not benchmarked.
+    STAGING_DIR: str = "./.staging"
+    MIN_FREE_DISK_MB: int = 2048
+    PROMOTION_LEASE_SECONDS: int = 300
 
     @property
     def connector_allowed_hosts_list(self) -> list[str]:
