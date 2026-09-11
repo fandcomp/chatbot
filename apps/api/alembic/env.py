@@ -34,7 +34,12 @@ from app.documents.models import (  # noqa: F401
     DocumentRelation,
     DocumentVersion,
 )
-from app.indexing.models import EmbeddingCacheEntry  # noqa: F401
+from app.indexing.models import (  # noqa: F401
+    Budget,
+    EmbeddingCacheEntry,
+    PricingRate,
+    UsageLedgerEntry,
+)
 from app.ingestion.models import ProcessingJob  # noqa: F401
 from app.knowledge.models import KnowledgeSpace  # noqa: F401
 from app.organizations.models import Organization, OrganizationMember  # noqa: F401

@@ -35,6 +35,7 @@ from app.database import (
     documents,
     processing_jobs,
 )
+from app.indexing.budget import BudgetExceededError
 from app.indexing.embedding_gateway import EmbeddingGateway
 from app.indexing.pipeline import build_indexing_points
 from app.indexing.qdrant_writer import ensure_collection, upsert_chunks
@@ -678,7 +679,7 @@ def chunk_document(self, job_id: str) -> None:
     asyncio.run(_chunk_document_async(job_id, attempts=self.request.retries + 1))
 
 
-async def _index_document_async(job_id: str, attempts: int) -> None:
+async def _index_document_async(self, job_id: str, attempts: int) -> None:
     async with async_session_factory() as session:
         job_row = (
             await session.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
@@ -752,12 +753,25 @@ async def _index_document_async(job_id: str, attempts: int) -> None:
                 active_version_row,
                 dict(document_row),
                 EmbeddingGateway(),
+                job_id=job_id,
             )
         except _TRANSIENT_VOYAGE_ERRORS:
             # Rate limit / transient network / 5xx — let Celery's
             # autoretry_for retry with backoff instead of failing the job
             # outright (the job stays at "PROCESSING", set above).
             raise
+        except BudgetExceededError as exc:
+            # LAN-M5 (addendum §8): pause, don't fail — mirrors LAN-M2's
+            # disk-watermark PAUSED_CAPACITY shape exactly. A budget ceiling
+            # doesn't clear on its own the way disk space might, so this
+            # uses a much longer countdown than the 60s capacity pause.
+            await session.execute(
+                update(processing_jobs)
+                .where(processing_jobs.c.id == job_id)
+                .values(status="PAUSED_BUDGET", error_message=str(exc), updated_at=datetime.now(UTC))
+            )
+            await session.commit()
+            self.retry(exc=exc, countdown=300)
         except Exception as exc:  # noqa: BLE001 - a Voyage API error (bad
             # request, malformed response) must resolve the job to FAILED,
             # not strand it at PROCESSING forever.
@@ -836,4 +850,4 @@ async def _index_document_async(job_id: str, attempts: int) -> None:
     retry_kwargs={"max_retries": 5},
 )
 def index_document(self, job_id: str) -> None:
-    asyncio.run(_index_document_async(job_id, attempts=self.request.retries + 1))
+    asyncio.run(_index_document_async(self, job_id, attempts=self.request.retries + 1))

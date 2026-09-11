@@ -2,6 +2,123 @@
 
 Checkpoint doc for the LAN archive ingestion track (`docs/LAN_ARCHIVE_IMPLEMENTATION_PLAN.md`). Updated at the end of each milestone so the next session can resume without re-auditing from scratch.
 
+## LAN-M5: Ingestion budget control — **complete**
+
+Scoped to **backend cost control only, admin UI deferred** (a deliberate decision, confirmed before starting): `git log` confirmed no LAN-facing frontend exists yet for any milestone, so "admin UI" would be a brand-new surface, meaningfully separable from the part that actually prevents uncontrolled spend. This milestone builds the usage ledger, versioned pricing config, and an atomic admission-control gate in front of the only currently-paid ingestion call.
+
+### Acceptance criteria status
+
+| Criterion | Status |
+|---|---|
+| A reservation succeeds and increments `reserved_usd` correctly within budget | **Passed** — `test_reserve_ingestion_budget_succeeds_within_limit` |
+| A reservation over the limit raises, never silently proceeds | **Passed** — `test_reserve_ingestion_budget_raises_when_over_the_limit` |
+| An unknown price is never treated as free | **Passed** — `test_reserve_ingestion_budget_never_treats_an_unknown_price_as_free` |
+| Settlement moves `reserved_usd` → `spent_usd` at the reserved amount | **Passed** — `test_settle_usage_moves_reserved_to_spent` |
+| Release gives back `reserved_usd` without ever charging `spent_usd` | **Passed** — `test_release_reservation_gives_back_reserved_without_charging_spent` |
+| Concurrent reservations near the ceiling never oversubscribe | **Passed** — `test_concurrent_reservations_near_the_ceiling_never_oversubscribe` |
+| Pricing lookup excludes an expired rate | **Passed** — `test_get_current_rate_excludes_an_expired_rate` |
+| A job whose estimated cost exceeds budget pauses (`PAUSED_BUDGET`) and retries, never fails outright, never calls Voyage | **Passed** — `test_index_document_pauses_on_budget_exceeded_instead_of_failing` |
+| A job within budget still settles and reaches `ACTIVE` exactly as before (no regression) | **Passed** — existing `test_index_document_embeds_chunks_and_upserts_points_and_marks_active` still green with the gate wired in |
+| A cache-hit-only job (LAN-M3) reserves nothing at all | **Passed** — structurally guaranteed (reservation lives inside the `if miss_indices:` block) and proven by the existing cross-version cache-hit test staying green with zero budget/ledger rows created for that job |
+| No regression in existing suites (LAN-M1-M4 + M0-M15 core, both apps) | **Passed** — see Test commands and results below |
+
+### Research findings that shaped the design (verified by reading the code, not assumed)
+
+- **Only one paid ingestion stage exists today**: `EmbeddingGateway.embed_documents` (Voyage) inside `build_indexing_points`. Parsing/chunking never call a paid API.
+- **LAN-M3's embedding cache already reduces what needs reserving** — reservation had to wrap only `miss_indices` (chunks that actually need a Voyage call), not every chunk, or a cache hit would wrongly consume budget for free work.
+- **Atomic claim idiom already established** by LAN-M2's lease claim (`sources_tasks.py`) — one conditional `UPDATE ... WHERE ... RETURNING`, checked by rowcount/`None`. Budget reservation reuses this exact idiom instead of introducing a `SELECT ... FOR UPDATE` pattern that doesn't exist anywhere else in this codebase. Proven race-safe by a real concurrent test (`asyncio.gather` of two reservations at the ceiling), not just argued.
+- **Pause/retry precedent** from LAN-M2's disk-watermark pause (`PromotionStatus.PAUSED_CAPACITY` + `self.retry(exc=..., countdown=60)`) is the exact template for `ProcessingJobStatus.PAUSED_BUDGET` — same pause-not-fail shape, longer countdown (300s) since a budget ceiling doesn't clear on its own the way disk space might.
+
+### Gap found and fixed during this milestone (not caught in planning)
+
+The first migration draft used `usage_ledger_entries.source_root_id` (FK to `source_roots`). Fixed to `source_entry_id` (FK to `source_entries`, matching `DocumentVersion.source_entry_id` exactly) before it was committed — avoids an extra join at every reservation call site and matches LAN-M2's actual provenance granularity. Caught by re-checking the design against `build_indexing_points`'s actual available fields before wiring, not after.
+
+A second gap surfaced only when running tests: `usage_ledger_entries.job_id` (FK to `processing_jobs`) and `budgets.organization_id` (FK to `organizations`) blocked `test_index_document.py`'s existing per-test cleanup (which deletes `processing_jobs` and, via the `seeded_document_version` fixture's teardown, `organizations`) with a `ForeignKeyViolationError`. Fixed by having `_cleanup()` explicitly delete `usage_ledger_entries`/`budgets` for the seeded org before the fixture's own teardown runs — matching this file's already-established explicit-cleanup style, and deliberately not relying on pytest's autouse-fixture teardown ordering (which isn't guaranteed to run in the order needed here).
+
+### Key design decisions
+
+- **No `STRICT_BUDGET_MODE` toggle.** "Unknown price is never treated as zero" (addendum §8) is unconditional — no config flag that could default to the wrong (unsafe) behavior.
+- **All-or-nothing reservation per indexing job** — a job's estimated cost (sum of cache-miss chunks' `token_count`) is reserved in full or not at all, no partial-batch embedding.
+- **Budget row created lazily** with `settings.INGESTION_BUDGET_DEFAULT_USD` the first time an org attempts a reservation (`INSERT ... ON CONFLICT DO NOTHING`, then the conditional `UPDATE`) — no admin endpoint needed to create budgets this pass.
+- **`budget_type` is a column, not two schemas** — `CHAT` is a valid value from day one but only `INGESTION` is enforced this milestone.
+- **Settlement reuses the pre-call token estimate**, not Voyage's real billed `total_tokens` (the API does return it, but `EmbeddingGateway.embed_documents` would need a return-shape change and its existing tests touched for a precision gain that doesn't matter for budget *control* vs. billing reconciliation) — recorded below as a deferred improvement.
+- **No period/reset logic** (monthly rollover etc.) — YAGNI until a pilot actually needs one; `spent_usd`/`limit_usd` are simple running totals, resettable by direct DB edit until admin UI lands.
+
+### Files changed
+
+**Docs:**
+- `docs/LAN_ARCHIVE_PROGRESS.md` (this file)
+
+**apps/api:**
+- `apps/api/app/indexing/models.py` — new `PricingRate`, `Budget` (`BudgetType`), `UsageLedgerEntry` (`UsageLedgerEntryStatus`)
+- `apps/api/app/ingestion/models.py` — added `ProcessingJobStatus.PAUSED_BUDGET`
+- `apps/api/alembic/env.py` — imports for the new models
+- `apps/api/alembic/versions/f4a1c8e2b9d6_*.py` — new migration: 3 new tables, 1 new enum value, 1 seed pricing row
+
+**workers/document_worker:**
+- `app/database.py` — Core Table mirrors for `pricing_rates`/`budgets`/`usage_ledger_entries`; `processing_job_status` mirror extended with `PAUSED_BUDGET`
+- `app/core/config.py` — `INGESTION_BUDGET_DEFAULT_USD`
+- `app/indexing/budget.py` — new: `get_current_rate`, `reserve_ingestion_budget`, `settle_usage`, `release_reservation`, `BudgetExceededError`
+- `app/indexing/pipeline.py::build_indexing_points` — reserve before the Voyage call (miss set only), release on embed failure, settle on success; gained an optional `job_id` parameter
+- `app/tasks.py::_index_document_async`/`index_document` — threaded `self` through (mirrors `_promote_source_entry_async`'s existing pattern) so a caught `BudgetExceededError` sets `PAUSED_BUDGET` and calls `self.retry(...)`
+- `tests/test_budget.py` — new, 9 unit tests
+- `tests/test_index_document.py` — new `_FakeTask` helper (mirrors `test_sources_tasks.py`'s own), all `_index_document_async` call sites updated for the new `self` parameter, new budget-pause integration test, `_cleanup()` extended for the FK gap above
+
+**.env.example:**
+- Documented `INGESTION_BUDGET_DEFAULT_USD`
+
+### Migrations
+
+`f4a1c8e2b9d6` — additive: three new tables (`pricing_rates`, `budgets`, `usage_ledger_entries`), one new `processing_job_status` enum value (`PAUSED_BUDGET`, via `ALTER TYPE ... ADD VALUE`), one seed pricing row (pilot placeholder — see `.env.example`). No existing table's existing columns touched. Applied successfully (`d3e8f1a4c6b2` → `f4a1c8e2b9d6`) — hit and fixed one real issue during development (see below), not just on the first try.
+
+**Bug caught and fixed during development, not just at the end**: the first migration attempt explicitly called `sa.Enum(...).create(op.get_bind())` for the two new enum types *and* used the same `sa.Enum(...)` objects as column types in `op.create_table(...)` — `create_table` already auto-creates an enum type the first time it's used as a column type, so the explicit `.create()` calls collided with it (`DuplicateObjectError`), rolling back the whole transaction. Fixed by removing the explicit `.create()` calls and letting `create_table` handle it, matching how the existing `a7057580f523` (LAN-M2) migration already does it.
+
+### Test commands and results
+
+```
+cd apps/api && uv run alembic upgrade head
+  -> applies cleanly (after the enum-creation fix above)
+
+cd apps/api && uv run pytest -q
+  -> 205 passed (unchanged count from LAN-M4 — schema/model additions only,
+     no new apps/api endpoints or tests this milestone)
+
+cd workers/document_worker && uv run pytest -q --ignore=tests/test_parse_document.py \
+  --ignore=tests/test_pipeline.py --ignore=tests/test_region_segmenter.py --ignore=tests/test_tree_builder.py
+  -> 125 passed, 1 skipped (was 115 passed, 1 skipped after LAN-M3/M4; +9
+     test_budget.py + 1 new index_document budget-pause integration test)
+
+cd workers/document_worker && uv run pytest tests/test_parse_document.py tests/test_pipeline.py \
+  tests/test_region_segmenter.py tests/test_tree_builder.py -q
+  -> 23 passed (unchanged — this milestone never touches the parsing pipeline)
+
+cd workers/document_worker && uv run ruff check app/ tests/
+  -> clean (after fixing two import-order issues)
+```
+
+### Assumptions not yet validated
+
+- Everything already listed under LAN-M1-M4 still applies.
+- The seeded Voyage rate (`$0.00012/1k tokens`) is a pilot placeholder, not verified against Voyage's current published pricing at any specific date — an admin UI to manage rates (with the `source` field's audit trail actually used) is deferred.
+- `INGESTION_BUDGET_DEFAULT_USD` (`$50`, pilot value) has not been validated against any real ingestion volume — no real Windows LAN/SMB share has been ingested yet (same blocker as every prior milestone).
+- Settlement uses the pre-call token estimate, not Voyage's actual billed `total_tokens` — a documented, deliberate simplification (see Key design decisions), not an oversight.
+
+### Explicitly deferred (recorded, not silently dropped)
+
+- **Admin UI** (source list, scan status, budget/coverage dashboard) — per the scoping decision above. Nothing LAN-facing exists in `apps/web` yet for any milestone.
+- **Chat budget enforcement** — `BudgetType.CHAT` exists in the schema so a future milestone needs no migration to wire it up, but this pass only enforces `INGESTION`. Chat already has after-the-fact `QueryLog.estimated_cost_usd` tracking; it wasn't the addendum's stated urgent gap.
+- **Period/reset logic** (monthly rollover, etc.) — YAGNI until a pilot needs one.
+- **Real Voyage `total_tokens` reconciliation** at settlement time, instead of the pre-call estimate — would require changing `EmbeddingGateway.embed_documents`'s return shape and touching its existing tests for a precision gain that doesn't matter for budget control.
+- **Per-org budget-limit admin endpoint** — budgets are currently only created lazily at the configured default; adjusting a specific org's limit requires a direct DB edit until admin UI lands.
+
+### Blockers
+
+- Same as LAN-M1-M4: no real Windows LAN/SMB share reachable from this dev environment.
+
+### Next step
+
+LAN-M5 is complete per its acceptance criteria (backend scope). Per Operating Rule #3, **do not** proceed to LAN-M6 (pilot and operations guide) automatically — re-read this file plus the implementation plan's LAN-M6 section first.
+
 ## LAN-M4: End-to-end access and retrieval — **complete**
 
 Scoped to **audit + regression tests, viewer endpoint deferred** (a deliberate decision, confirmed before starting): the addendum's stated requirements (tenant scoping across retrieval-adjacent paths, curated-access-by-default, immediate revocation) turned out to already be fully satisfied by the existing architecture, verified by reading the actual code before writing anything. The one genuinely new thing the addendum names — an authenticated document viewer/download endpoint — doesn't exist for **any** document type today, LAN-sourced or uploaded, so building one isn't a LAN-specific gap; it's deferred to a follow-up milestone, same framing as legacy `.doc` in LAN-M3. Full Windows-ACL mode is likewise deferred — the addendum itself calls it "LAN-M4's own separate work."
@@ -293,6 +410,7 @@ LAN-M2 is complete per its acceptance criteria. Per Operating Rule #3, **do not*
 
 ## Milestone history
 
+- **LAN-M5** — ingestion budget control: usage ledger, versioned pricing config, atomic reserve/settle/release, budget-paused-not-failed jobs. Admin UI and chat-budget enforcement explicitly deferred. See acceptance criteria table above.
 - **LAN-M4** — end-to-end access/retrieval audit: verified (with regression tests, not just code reading) that tenant scoping and immediate revocation already work identically for LAN-sourced documents; viewer endpoint and Windows-ACL mode explicitly deferred. See acceptance criteria table above.
 - **LAN-M3** — DOCX parsing (page-optional pipeline generalization) and embedding cache. See acceptance criteria table above.
 - **LAN-M2** — selective snapshot/promotion into the existing document pipeline, streaming transfer, dedup, disk watermark, crash-safe lease-based idempotency. See acceptance criteria table above.

@@ -3,11 +3,17 @@ vectors and payloads, and produce Qdrant points ready to upsert. Never
 re-chunks — reads M5's already-persisted `document_chunks` rows as-is.
 """
 
+import uuid
 from dataclasses import dataclass
 
 from qdrant_client import models
 
 from app.database import async_session_factory
+from app.indexing.budget import (
+    release_reservation,
+    reserve_ingestion_budget,
+    settle_usage,
+)
 from app.indexing.embedding_cache import (
     cache_key_for,
     get_cached_embeddings,
@@ -30,6 +36,7 @@ async def build_indexing_points(
     version_row: dict,
     document_row: dict,
     embedding_gateway: EmbeddingGateway,
+    job_id: str | None = None,
 ) -> IndexingResult:
     if not chunk_rows:
         return IndexingResult(points=[])
@@ -44,9 +51,30 @@ async def build_indexing_points(
     miss_indices = [index for index, vector in enumerate(dense_vectors) if vector is None]
 
     if miss_indices:
-        embedded = await embedding_gateway.embed_documents(
-            [contextual_texts[index] for index in miss_indices]
-        )
+        estimated_tokens = sum(chunk_rows[index]["token_count"] for index in miss_indices)
+        async with async_session_factory() as session:
+            ledger_entry_id = await reserve_ingestion_budget(
+                session,
+                organization_id=version_row["organization_id"],
+                source_entry_id=version_row.get("source_entry_id"),
+                job_id=uuid.UUID(job_id) if job_id is not None else None,
+                stage="EMBEDDING",
+                provider="voyage",
+                token_count=estimated_tokens,
+            )
+
+        try:
+            embedded = await embedding_gateway.embed_documents(
+                [contextual_texts[index] for index in miss_indices]
+            )
+        except Exception:
+            # The reservation must never be left dangling as permanently
+            # "reserved" for work that never happened — that would
+            # permanently shrink the organization's real budget headroom.
+            async with async_session_factory() as session:
+                await release_reservation(session, ledger_entry_id)
+            raise
+
         for index, vector in zip(miss_indices, embedded, strict=True):
             dense_vectors[index] = vector
 
@@ -54,6 +82,7 @@ async def build_indexing_points(
             await store_embeddings(
                 session, [(cache_keys[index], dense_vectors[index]) for index in miss_indices]
             )
+            await settle_usage(session, ledger_entry_id)
 
     points: list[models.PointStruct] = []
     for chunk, dense_vector in zip(chunk_rows, dense_vectors, strict=True):

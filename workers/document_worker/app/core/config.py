@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     # key still changes correctly if that's ever turned off.
     EMBEDDING_MODEL_REVISION: str = "1"
     EMBEDDING_NORMALIZED: bool = True
+    # LAN-M5 (addendum §8) — the limit a lazily-created Budget row gets the
+    # first time an organization attempts an ingestion reservation. Pilot
+    # value, not a benchmarked production limit — an admin override
+    # endpoint is deferred (admin UI territory).
+    INGESTION_BUDGET_DEFAULT_USD: float = 50.0
 
     # LAN ARCHIVE CONNECTOR (LAN-M1, ADR-020) — mirrors
     # apps/api/app/core/config.py's own CONNECTOR_ALLOWED_HOSTS (hand-synced-

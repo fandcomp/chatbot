@@ -63,7 +63,22 @@ _document_lifecycle_status = ENUM(
     create_type=False,
 )
 _processing_job_status = ENUM(
-    "QUEUED", "PROCESSING", "SUCCEEDED", "FAILED", name="processing_job_status", create_type=False
+    "QUEUED",
+    "PROCESSING",
+    "SUCCEEDED",
+    "FAILED",
+    "PAUSED_BUDGET",
+    name="processing_job_status",
+    create_type=False,
+)
+# LAN-M5 (addendum §8) — mirrors apps/api/app/indexing/models.py.
+_lan_budget_type = ENUM("INGESTION", "CHAT", name="lan_budget_type", create_type=False)
+_lan_usage_ledger_entry_status = ENUM(
+    "RESERVED",
+    "SETTLED",
+    "RELEASED",
+    name="lan_usage_ledger_entry_status",
+    create_type=False,
 )
 
 document_versions = Table(
@@ -467,6 +482,55 @@ embedding_cache_entries = Table(
     Column("normalized", Boolean),
     Column("embedding", ARRAY(Float)),
     Column("created_at", DateTime(timezone=True)),
+)
+
+
+# LAN-M5 (addendum §8) — admission-control gate in front of the only
+# currently-paid ingestion call (Voyage embedding). Mirrors
+# apps/api/app/indexing/models.py::PricingRate/Budget/UsageLedgerEntry.
+pricing_rates = Table(
+    "pricing_rates",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("provider", String(50)),
+    Column("unit", String(50)),
+    Column("price_usd", Numeric(10, 6)),
+    Column("currency", String(3)),
+    Column("effective_from", DateTime(timezone=True)),
+    Column("effective_until", DateTime(timezone=True)),
+    Column("source", String(255)),
+    Column("created_at", DateTime(timezone=True)),
+)
+
+budgets = Table(
+    "budgets",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("organization_id", UUID(as_uuid=True)),
+    Column("budget_type", _lan_budget_type),
+    Column("limit_usd", Numeric(12, 2)),
+    Column("spent_usd", Numeric(12, 6)),
+    Column("reserved_usd", Numeric(12, 6)),
+    Column("updated_at", DateTime(timezone=True)),
+)
+
+usage_ledger_entries = Table(
+    "usage_ledger_entries",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("organization_id", UUID(as_uuid=True)),
+    Column("budget_id", UUID(as_uuid=True)),
+    Column("source_entry_id", UUID(as_uuid=True)),
+    Column("job_id", UUID(as_uuid=True)),
+    Column("stage", String(50)),
+    Column("provider", String(50)),
+    Column("quantity", Numeric(14, 2)),
+    Column("unit", String(50)),
+    Column("unit_price_usd", Numeric(10, 6)),
+    Column("amount_usd", Numeric(12, 6)),
+    Column("status", _lan_usage_ledger_entry_status),
+    Column("created_at", DateTime(timezone=True)),
+    Column("settled_at", DateTime(timezone=True)),
 )
 
 

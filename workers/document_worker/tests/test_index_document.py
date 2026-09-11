@@ -20,6 +20,20 @@ from app.indexing.qdrant_writer import COLLECTION_NAME
 from app.tasks import _index_document_async
 
 
+class _FakeTask:
+    """Stands in for Celery's bound task `self` — raising the retry
+    exception directly gives the test full control without depending on
+    Celery's eager-mode retry semantics. Same shape as
+    test_sources_tasks.py's own _FakeTask.
+    """
+
+    class _RetrySignal(Exception):
+        pass
+
+    def retry(self, exc=None, countdown=None):
+        raise self._RetrySignal(str(exc))
+
+
 async def _seed_document_version_and_job(seeded: dict, status: str = "INDEXING") -> None:
     async with async_session_factory() as session:
         await session.execute(
@@ -128,6 +142,18 @@ async def _seed_chunk(seeded: dict, node_id: uuid.UUID, chunk_id: uuid.UUID) -> 
 
 async def _cleanup(seeded: dict) -> None:
     async with async_session_factory() as session:
+        # LAN-M5: a reservation may have created usage_ledger_entries (FK to
+        # processing_jobs) and a budgets row (FK to organizations) — both
+        # must go before the seeded_document_version fixture's own teardown
+        # deletes the job/org, or that teardown hits a FK violation.
+        await session.execute(
+            text("DELETE FROM usage_ledger_entries WHERE job_id = :job_id"),
+            {"job_id": seeded["job_id"]},
+        )
+        await session.execute(
+            text("DELETE FROM budgets WHERE organization_id = :org_id"),
+            {"org_id": seeded["org_id"]},
+        )
         await session.execute(
             text("DELETE FROM document_chunks WHERE document_version_id = :vid"),
             {"vid": seeded["version_id"]},
@@ -197,7 +223,7 @@ async def test_index_document_embeds_chunks_and_upserts_points_and_marks_active(
 
     try:
         with patch("app.tasks.EmbeddingGateway", return_value=fake_gateway):
-            await _index_document_async(str(seeded["job_id"]), attempts=1)
+            await _index_document_async(_FakeTask(), str(seeded["job_id"]), attempts=1)
 
         job = await _job_row(seeded["job_id"])
         assert job["status"] == "SUCCEEDED"
@@ -259,7 +285,7 @@ async def test_index_document_auto_supersedes_previous_active_version(seeded_doc
 
     try:
         with patch("app.tasks.EmbeddingGateway", return_value=fake_gateway):
-            await _index_document_async(str(seeded["job_id"]), attempts=1)
+            await _index_document_async(_FakeTask(), str(seeded["job_id"]), attempts=1)
 
         new_version = await _version_row(seeded["version_id"])
         assert new_version["status"] == "ACTIVE"
@@ -321,7 +347,7 @@ async def test_index_document_invalidates_answer_cache_for_the_organization(
 
     try:
         with patch("app.tasks.EmbeddingGateway", return_value=fake_gateway):
-            await _index_document_async(str(seeded["job_id"]), attempts=1)
+            await _index_document_async(_FakeTask(), str(seeded["job_id"]), attempts=1)
 
         assert await redis_client.get(own_key) is None
         # Another organization's cached answers must be left untouched.
@@ -347,7 +373,7 @@ async def test_index_document_fails_the_job_when_embedding_raises(seeded_documen
 
     try:
         with patch("app.tasks.EmbeddingGateway", return_value=fake_gateway):
-            await _index_document_async(str(seeded["job_id"]), attempts=1)
+            await _index_document_async(_FakeTask(), str(seeded["job_id"]), attempts=1)
 
         job = await _job_row(seeded["job_id"])
         assert job["status"] == "FAILED"
@@ -383,10 +409,50 @@ async def test_index_document_reraises_transient_voyage_errors_instead_of_failin
     try:
         with patch("app.tasks.EmbeddingGateway", return_value=fake_gateway):
             with pytest.raises(voyage_errors.RateLimitError):
-                await _index_document_async(str(seeded["job_id"]), attempts=1)
+                await _index_document_async(_FakeTask(), str(seeded["job_id"]), attempts=1)
 
         job = await _job_row(seeded["job_id"])
         assert job["status"] == "PROCESSING"
+
+        version = await _version_row(seeded["version_id"])
+        assert version["status"] == "INDEXING"
+    finally:
+        await _cleanup(seeded)
+
+
+@pytest.mark.asyncio
+async def test_index_document_pauses_on_budget_exceeded_instead_of_failing(
+    seeded_document_version, monkeypatch
+) -> None:
+    # LAN-M5 (addendum §8): a job whose estimated cost exceeds the
+    # organization's ingestion budget must pause and retry, never fail
+    # outright and never silently proceed. A $0 limit means the first
+    # reservation attempt (any positive amount) always exceeds it.
+    monkeypatch.setattr(settings, "INGESTION_BUDGET_DEFAULT_USD", 0.0)
+
+    seeded = seeded_document_version
+    await _seed_document_version_and_job(seeded, status="INDEXING")
+    region_id = uuid.uuid4()
+    node_id = uuid.uuid4()
+    chunk_id = uuid.uuid4()
+    await _seed_region(seeded, region_id)
+    await _seed_node(seeded, region_id, node_id)
+    await _seed_chunk(seeded, node_id, chunk_id)
+
+    fake_gateway = AsyncMock()
+    fake_gateway.embed_documents = AsyncMock()
+
+    try:
+        with patch("app.tasks.EmbeddingGateway", return_value=fake_gateway):
+            with pytest.raises(_FakeTask._RetrySignal):
+                await _index_document_async(_FakeTask(), str(seeded["job_id"]), attempts=1)
+
+        # Never actually called Voyage — the reservation must be checked
+        # before the paid call, not after.
+        fake_gateway.embed_documents.assert_not_called()
+
+        job = await _job_row(seeded["job_id"])
+        assert job["status"] == "PAUSED_BUDGET"
 
         version = await _version_row(seeded["version_id"])
         assert version["status"] == "INDEXING"
@@ -491,13 +557,13 @@ async def test_index_document_reuses_cached_embedding_for_identical_chunk_text_a
             return_value=[[0.1] * settings.VOYAGE_EMBEDDING_DIMENSION]
         )
         with patch("app.tasks.EmbeddingGateway", return_value=first_gateway):
-            await _index_document_async(str(first["job_id"]), attempts=1)
+            await _index_document_async(_FakeTask(), str(first["job_id"]), attempts=1)
         first_gateway.embed_documents.assert_called_once()
 
         second_gateway = AsyncMock()
         second_gateway.embed_documents = AsyncMock()
         with patch("app.tasks.EmbeddingGateway", return_value=second_gateway):
-            await _index_document_async(str(second["job_id"]), attempts=1)
+            await _index_document_async(_FakeTask(), str(second["job_id"]), attempts=1)
         second_gateway.embed_documents.assert_not_called()
 
         second_job = await _job_row(second["job_id"])

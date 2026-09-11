@@ -15,6 +15,11 @@ class ProcessingJobStatus(str, enum.Enum):
     PROCESSING = "PROCESSING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+    # LAN-M5 (addendum §8): the only stage that can hit this today is
+    # index_document's Voyage embedding call — never a silent free pass when
+    # no budget room exists. Retryable, same pause-not-fail shape as LAN-M2's
+    # PromotionStatus.PAUSED_CAPACITY.
+    PAUSED_BUDGET = "PAUSED_BUDGET"
 
 
 class ProcessingJob(Base):
