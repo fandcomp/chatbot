@@ -15,9 +15,11 @@ split.
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import (
+    ARRAY,
     Boolean,
     Column,
     DateTime,
+    Float,
     Integer,
     MetaData,
     Numeric,
@@ -446,6 +448,24 @@ audit_logs = Table(
     Column("entity_id", UUID(as_uuid=True)),
     Column("old_value", JSONB),
     Column("new_value", JSONB),
+    Column("created_at", DateTime(timezone=True)),
+)
+
+
+# LAN-M3 (addendum §5): closes the "no embedding cache" gap — global, not
+# tenant-scoped, since an embedding only ever depends on contextual_text +
+# embedding config, never on which tenant/document it came from. Mirrors
+# apps/api/app/indexing/models.py::EmbeddingCacheEntry.
+embedding_cache_entries = Table(
+    "embedding_cache_entries",
+    metadata,
+    Column("id", UUID(as_uuid=True), primary_key=True),
+    Column("cache_key", String(64)),
+    Column("model", String(255)),
+    Column("revision", String(255)),
+    Column("dimension", Integer),
+    Column("normalized", Boolean),
+    Column("embedding", ARRAY(Float)),
     Column("created_at", DateTime(timezone=True)),
 )
 

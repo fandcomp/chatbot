@@ -11,7 +11,7 @@ from app.parsing.tree_builder import (
     add_unknown_blocks_for_uncovered_pages,
     build_tree,
 )
-from tests.fixtures import digital_text_pdf, image_only_pdf
+from tests.fixtures import digital_text_docx, digital_text_pdf, image_only_pdf
 
 
 def _fake_node(**overrides) -> NodeSpec:
@@ -40,8 +40,8 @@ def _fake_node(**overrides) -> NodeSpec:
     return NodeSpec(**defaults)
 
 
-def _build(pdf_bytes: bytes, level: ParserLevel = ParserLevel.LEVEL_1_NATIVE):
-    result = convert(DocumentStream(name="test.pdf", stream=io.BytesIO(pdf_bytes)), level)
+def _build(pdf_bytes: bytes, level: ParserLevel = ParserLevel.LEVEL_1_NATIVE, filename: str = "test.pdf"):
+    result = convert(DocumentStream(name=filename, stream=io.BytesIO(pdf_bytes)), level)
     stats = collect_page_stats(result.document)
     regions = segment_regions(result.document, stats)
     nodes = build_tree(result.document, regions, level)
@@ -96,6 +96,25 @@ def test_build_tree_assigns_every_node_to_a_region_within_document_bounds():
     region_ids = {r.id for r in regions}
     for node in nodes:
         assert node.region_id in region_ids
+
+
+def test_build_tree_on_docx_has_no_page_numbers_but_correct_regions():
+    # DOCX has no stable page numbers (addendum §5) — nodes must never
+    # fabricate one, but must still resolve to the correct region using the
+    # position-based fallback (`_region_for_node`).
+    nodes, regions, stats = _build(digital_text_docx(), filename="test.docx")
+
+    assert stats == []
+    region_ids = {r.id for r in regions}
+    appendix_region = next(r for r in regions if r.region_type == "APPENDIX")
+
+    for node in nodes:
+        assert node.page_start is None
+        assert node.page_end is None
+        assert node.region_id in region_ids
+
+    lampiran_heading = next(n for n in nodes if n.title == "LAMPIRAN")
+    assert lampiran_heading.region_id == appendix_region.id
 
 
 def test_build_tree_links_siblings_via_previous_and_next():

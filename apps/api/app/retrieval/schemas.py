@@ -19,8 +19,10 @@ class RetrievedChunk(BaseModel):
     # Evidence/citation source (addendum §24.1) — never contextual_text,
     # which carries embedding-only "Dokumen:/BAB:/Isi:" boilerplate.
     original_text: str
-    page_start: int
-    page_end: int
+    # None for DOCX-derived chunks — no stable page number exists there at
+    # all (addendum §5); structural_path_text is the real citation location.
+    page_start: int | None
+    page_end: int | None
     sequence_number: int
     score: float | None
     # M8's parent expansion (spec §23) needs these to decide whether a chunk

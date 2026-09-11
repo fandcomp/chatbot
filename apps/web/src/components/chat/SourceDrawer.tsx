@@ -37,10 +37,12 @@ export function SourceDrawer({ citation, onClose }: Props) {
                 {citation.structural_path_text}
               </p>
             )}
-            <p className="mt-1 text-xs text-muted-foreground">
-              Page {citation.page_start}
-              {citation.page_end !== citation.page_start ? `–${citation.page_end}` : ""}
-            </p>
+            {citation.page_start !== null && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Page {citation.page_start}
+                {citation.page_end !== citation.page_start ? `–${citation.page_end}` : ""}
+              </p>
+            )}
           </div>
           <div className="rounded-lg border border-border bg-muted/30 p-3">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">

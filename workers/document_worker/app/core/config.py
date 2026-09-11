@@ -34,6 +34,14 @@ class Settings(BaseSettings):
     VOYAGE_API_KEY: str = ""
     EMBEDDING_MODEL: str = "voyage-context-4"
     VOYAGE_EMBEDDING_DIMENSION: int = 1024
+    # LAN-M3 (addendum §5) embedding cache key components — bump
+    # EMBEDDING_MODEL_REVISION by hand whenever Voyage silently updates
+    # weights under the same model name, so old cache entries stop being
+    # served as if they matched the new model. Voyage's contextualized
+    # embeddings are L2-normalized by default; this flag exists so the cache
+    # key still changes correctly if that's ever turned off.
+    EMBEDDING_MODEL_REVISION: str = "1"
+    EMBEDDING_NORMALIZED: bool = True
 
     # LAN ARCHIVE CONNECTOR (LAN-M1, ADR-020) — mirrors
     # apps/api/app/core/config.py's own CONNECTOR_ALLOWED_HOSTS (hand-synced-

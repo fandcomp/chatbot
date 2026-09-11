@@ -46,8 +46,10 @@ class DocumentChunk(Base):
     )
     depth: Mapped[int] = mapped_column(Integer, nullable=False)
     sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    page_start: Mapped[int] = mapped_column(Integer, nullable=False)
-    page_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    # None for a chunk built entirely from DOCX-derived nodes — no stable
+    # page number exists (addendum §5); structural_path_text is authoritative.
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Immutable evidence/citation source (addendum $24.1) — never rewritten
     # once created.
     original_text: Mapped[str] = mapped_column(Text, nullable=False)

@@ -19,8 +19,10 @@ class Evidence(BaseModel):
     document_version_id: uuid.UUID
     structural_path_text: str | None
     original_text: str
-    page_start: int
-    page_end: int
+    # None for DOCX-derived evidence — no stable page number exists there at
+    # all (addendum §5); structural_path_text is the real citation location.
+    page_start: int | None
+    page_end: int | None
     # Only ever the immediate parent's original_text (spec §23) — never used
     # as evidence on its own, only as supporting context alongside
     # original_text.

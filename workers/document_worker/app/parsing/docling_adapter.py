@@ -23,7 +23,11 @@ from docling.datamodel.pipeline_options import (
     RapidOcrOptions,
     TableFormerMode,
 )
-from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.document_converter import (
+    DocumentConverter,
+    PdfFormatOption,
+    WordFormatOption,
+)
 from docling_core.types.io import DocumentStream
 
 # Windows fix: transformers' parallel weight-materialization thread pool
@@ -61,10 +65,16 @@ def _pipeline_options_for(level: ParserLevel) -> PdfPipelineOptions:
 
 
 def convert(source: Path | DocumentStream, level: ParserLevel) -> ConversionResult:
-    """Run Docling conversion at the given cascade level."""
+    """Run Docling conversion at the given cascade level.
+
+    DOCX has no PDF-style pipeline options (no OCR/table-structure cascade —
+    it's always native text, addendum §5) so `WordFormatOption` is
+    registered as-is; the cascade `level` only ever varies the PDF branch.
+    """
     converter = DocumentConverter(
         format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=_pipeline_options_for(level))
+            InputFormat.PDF: PdfFormatOption(pipeline_options=_pipeline_options_for(level)),
+            InputFormat.DOCX: WordFormatOption(),
         }
     )
     return converter.convert(source)

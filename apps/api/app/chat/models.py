@@ -145,8 +145,10 @@ class MessageSource(Base):
         UUID(as_uuid=True), ForeignKey("documents.id"), nullable=False
     )
     structural_path_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    page_start: Mapped[int] = mapped_column(Integer, nullable=False)
-    page_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    # None for a DOCX-derived source — no stable page number exists there at
+    # all (addendum §5); structural_path_text is the real citation location.
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class ConversationSummary(Base):

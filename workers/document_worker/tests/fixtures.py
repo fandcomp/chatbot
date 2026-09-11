@@ -1,5 +1,6 @@
-"""Programmatically generated PDF fixtures for parsing tests — no binaries
-committed to the repo. `reportlab` is a worker dev-only dependency.
+"""Programmatically generated PDF/DOCX fixtures for parsing tests — no
+binaries committed to the repo. `reportlab`/`python-docx` are worker
+dev-only dependencies.
 
 Uses `reportlab.platypus` flowables (not raw `canvas.drawString`) so each
 heading/paragraph is its own distinct PDF text object with real spacing —
@@ -11,6 +12,7 @@ regulation PDF would.
 
 import io
 
+import docx
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
@@ -121,6 +123,39 @@ def decision_pdf() -> bytes:
         Paragraph("KEDUA : Keputusan ini berlaku sejak tanggal ditetapkan.", _BODY),
     ]
     doc.build(story)
+    return buffer.getvalue()
+
+
+def digital_text_docx() -> bytes:
+    """DOCX analogue of `digital_text_pdf` — headings, a numbered list, and a
+    table — but with no page breaks at all: Docling gives DOCX no page
+    provenance (`doc.pages` is empty, addendum §5), so this exercises the
+    document-order (position-based) region segmentation path instead.
+    """
+    document = docx.Document()
+    document.add_heading("PERATURAN CONTOH NOMOR 1 TAHUN 2026", level=0)
+    document.add_paragraph("TENTANG PENGUJIAN DOKUMEN")
+    document.add_heading("BAB III", level=1)
+    document.add_heading("TAHAP PERENCANAAN", level=1)
+    document.add_paragraph("10. Umum")
+    document.add_paragraph("Penjelasan umum mengenai tahap perencanaan.")
+    document.add_paragraph("11. Urut-urutan Kegiatan")
+    document.add_paragraph("a. Kegiatan pertama dalam urutan.")
+    document.add_paragraph("b. Kegiatan kedua dalam urutan.")
+    table = document.add_table(rows=3, cols=3)
+    rows = [
+        ["No", "Nama", "Jumlah"],
+        ["1", "Item Pertama", "10"],
+        ["2", "Item Kedua", "20"],
+    ]
+    for row_idx, row_values in enumerate(rows):
+        for col_idx, value in enumerate(row_values):
+            table.cell(row_idx, col_idx).text = value
+    document.add_heading("LAMPIRAN", level=1)
+    document.add_paragraph("Lampiran ini berisi contoh formulir.")
+
+    buffer = io.BytesIO()
+    document.save(buffer)
     return buffer.getvalue()
 
 

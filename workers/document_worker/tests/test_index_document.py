@@ -392,3 +392,124 @@ async def test_index_document_reraises_transient_voyage_errors_instead_of_failin
         assert version["status"] == "INDEXING"
     finally:
         await _cleanup(seeded)
+
+
+async def _seed_independent_document_version() -> dict:
+    """Same shape as `seeded_document_version`, but self-contained (no
+    fixture) — used when a test needs two independent document versions in
+    play at once, e.g. to prove the embedding cache (LAN-M3) is shared
+    across them rather than being some sort of per-request state.
+    """
+    org_id = uuid.uuid4()
+    space_id = uuid.uuid4()
+    document_id = uuid.uuid4()
+    seeded = {
+        "org_id": org_id,
+        "document_id": document_id,
+        "version_id": uuid.uuid4(),
+        "job_id": uuid.uuid4(),
+    }
+    async with async_session_factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO organizations (id, name, slug) VALUES "
+                "(:id, 'Worker Test Org 2', :slug)"
+            ),
+            {"id": org_id, "slug": f"worker-test-2-{org_id}"},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO knowledge_spaces (id, organization_id, name) VALUES "
+                "(:id, :org_id, 'General')"
+            ),
+            {"id": space_id, "org_id": org_id},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO documents (id, organization_id, knowledge_space_id, title) VALUES "
+                "(:id, :org_id, :space_id, 'test-doc-2')"
+            ),
+            {"id": document_id, "org_id": org_id, "space_id": space_id},
+        )
+        await session.commit()
+    return seeded | {"space_id": space_id}
+
+
+async def _cleanup_independent_document_version(seeded: dict) -> None:
+    await _cleanup(seeded)
+    async with async_session_factory() as session:
+        await session.execute(
+            text("DELETE FROM processing_jobs WHERE document_version_id = :vid"),
+            {"vid": seeded["version_id"]},
+        )
+        await session.execute(
+            text("DELETE FROM document_versions WHERE document_id = :did"),
+            {"did": seeded["document_id"]},
+        )
+        await session.execute(
+            text("DELETE FROM documents WHERE id = :id"), {"id": seeded["document_id"]}
+        )
+        await session.execute(
+            text("DELETE FROM knowledge_spaces WHERE id = :id"), {"id": seeded["space_id"]}
+        )
+        await session.execute(
+            text("DELETE FROM organizations WHERE id = :id"), {"id": seeded["org_id"]}
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_index_document_reuses_cached_embedding_for_identical_chunk_text_across_versions(
+    seeded_document_version,
+):
+    # LAN-M3 (addendum §5): a second, unrelated document version whose chunk
+    # has the exact same contextual_text/embedding config must hit the
+    # cache — no second Voyage call at all, not even a smaller one.
+    first = seeded_document_version
+    await _seed_document_version_and_job(first, status="INDEXING")
+    first_region_id, first_node_id, first_chunk_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await _seed_region(first, first_region_id)
+    await _seed_node(first, first_region_id, first_node_id)
+    await _seed_chunk(first, first_node_id, first_chunk_id)
+
+    second = await _seed_independent_document_version()
+    try:
+        await _seed_document_version_and_job(second, status="INDEXING")
+        second_region_id, second_node_id, second_chunk_id = (
+            uuid.uuid4(),
+            uuid.uuid4(),
+            uuid.uuid4(),
+        )
+        await _seed_region(second, second_region_id)
+        await _seed_node(second, second_region_id, second_node_id)
+        # Identical contextual_text to the first version's chunk (both use
+        # `_seed_chunk`'s hardcoded text) — this is the cache hit condition.
+        await _seed_chunk(second, second_node_id, second_chunk_id)
+
+        first_gateway = AsyncMock()
+        first_gateway.embed_documents = AsyncMock(
+            return_value=[[0.1] * settings.VOYAGE_EMBEDDING_DIMENSION]
+        )
+        with patch("app.tasks.EmbeddingGateway", return_value=first_gateway):
+            await _index_document_async(str(first["job_id"]), attempts=1)
+        first_gateway.embed_documents.assert_called_once()
+
+        second_gateway = AsyncMock()
+        second_gateway.embed_documents = AsyncMock()
+        with patch("app.tasks.EmbeddingGateway", return_value=second_gateway):
+            await _index_document_async(str(second["job_id"]), attempts=1)
+        second_gateway.embed_documents.assert_not_called()
+
+        second_job = await _job_row(second["job_id"])
+        assert second_job["status"] == "SUCCEEDED"
+
+        client = AsyncQdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY or None)
+        point = await client.retrieve(
+            collection_name=COLLECTION_NAME, ids=[str(second_chunk_id)], with_payload=False
+        )
+        # The cache-hit path must still write a real point with the cached
+        # vector, not skip indexing entirely.
+        assert len(point) == 1
+    finally:
+        await _cleanup(first)
+        await _cleanup_independent_document_version(second)

@@ -24,8 +24,10 @@ class Citation(BaseModel):
     # (addendum §16-18) — never a rigid Document->BAB->Pasal->Ayat->Huruf
     # structure. Frontend renders this per §26's dynamic display rules.
     structural_path_text: str | None
-    page_start: int
-    page_end: int
+    # None for DOCX-derived citations — no stable page number exists there
+    # at all (addendum §5); structural_path_text is the real citation.
+    page_start: int | None
+    page_end: int | None
     # A short excerpt of the immutable evidence/citation source text
     # (addendum §24.1) — never contextual_text — for the source drawer (§73)
     # to show without a second round-trip.

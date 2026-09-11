@@ -34,6 +34,7 @@ from app.documents.models import (  # noqa: F401
     DocumentRelation,
     DocumentVersion,
 )
+from app.indexing.models import EmbeddingCacheEntry  # noqa: F401
 from app.ingestion.models import ProcessingJob  # noqa: F401
 from app.knowledge.models import KnowledgeSpace  # noqa: F401
 from app.organizations.models import Organization, OrganizationMember  # noqa: F401
@@ -42,7 +43,12 @@ from app.parsing.models import (  # noqa: F401
     DocumentRegion,
     DocumentStructureProfile,
 )
-from app.sources.models import ScanRun, SourceEntry, SourceRoot  # noqa: F401
+from app.sources.models import (  # noqa: F401
+    PromotionRecord,
+    ScanRun,
+    SourceEntry,
+    SourceRoot,
+)
 from app.users.models import User  # noqa: F401
 
 # this is the Alembic Config object, which provides

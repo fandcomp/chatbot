@@ -114,8 +114,10 @@ export type StructureNode = {
   number_normalized: string | null;
   depth: number;
   sequence_number: number;
-  page_start: number;
-  page_end: number;
+  // Null for a DOCX-derived node — no stable page number exists there at
+  // all; structural_path_text is the real location.
+  page_start: number | null;
+  page_end: number | null;
   confidence: number;
   structural_path_json: StructurePathEntry[];
   structural_path_text: string | null;
@@ -130,8 +132,9 @@ export type StructureNode = {
 export type StructureRegion = {
   id: string;
   region_type: StructuralRegionType;
-  page_start: number;
-  page_end: number;
+  // Null for a DOCX-derived region — no stable page number exists there.
+  page_start: number | null;
+  page_end: number | null;
   sequence_number: number;
   confidence: number;
 };

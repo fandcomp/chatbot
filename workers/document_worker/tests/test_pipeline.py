@@ -1,6 +1,6 @@
 from app.parsing.docling_adapter import ParserLevel
 from app.parsing.pipeline import run_pipeline
-from tests.fixtures import digital_text_pdf, image_only_pdf
+from tests.fixtures import digital_text_docx, digital_text_pdf, image_only_pdf
 
 
 def test_run_pipeline_on_digital_text_pdf_parses_cleanly():
@@ -37,3 +37,19 @@ def test_run_pipeline_marks_review_required_when_ocr_fallback_was_used():
 
     if result.final_level == ParserLevel.LEVEL_3_OCR:
         assert result.status == "REVIEW_REQUIRED"
+
+
+def test_run_pipeline_on_docx_parses_cleanly_with_no_page_provenance():
+    # DOCX has no Docling page provenance at all (addendum §5) — this must
+    # not trip the "no regions -> PROCESSING_FAILED" check that a genuinely
+    # empty/corrupt file would, and must never escalate the OCR cascade
+    # (there is no "scanned page" concept for native Word text).
+    result = run_pipeline(digital_text_docx(), "test.docx")
+
+    assert result.status == "PARSED"
+    assert result.final_level is ParserLevel.LEVEL_1_NATIVE
+    assert result.regions
+    assert result.nodes
+    for node in result.nodes:
+        assert node.page_start is None
+        assert node.page_end is None

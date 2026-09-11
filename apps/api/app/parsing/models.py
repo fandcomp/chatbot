@@ -161,8 +161,10 @@ class DocumentRegion(Base):
     region_type: Mapped[StructuralRegionType] = mapped_column(
         SAEnum(StructuralRegionType, name="structural_region_type"), nullable=False
     )
-    page_start: Mapped[int] = mapped_column(Integer, nullable=False)
-    page_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    # None for a DOCX-derived region — Docling gives DOCX no page provenance
+    # at all (addendum §5); never fabricated.
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
     confidence: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -264,8 +266,10 @@ class DocumentNode(Base):
     normalized_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     depth: Mapped[int] = mapped_column(Integer, nullable=False)
     sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    page_start: Mapped[int] = mapped_column(Integer, nullable=False)
-    page_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    # None for a DOCX-derived node — no stable page number exists to report
+    # (addendum §5); structural_path_json is this node's real location.
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
     bounding_box: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     confidence: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
     source_provenance: Mapped[dict] = mapped_column(JSONB, nullable=False)

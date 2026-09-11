@@ -108,10 +108,25 @@ def _node_type_for(item: Any) -> str:
     return _LABEL_TO_NODE_TYPE.get(item.label, "UNKNOWN_BLOCK")
 
 
-def _region_for_page(regions: list[RegionRecord], page_no: int | None) -> RegionRecord:
+def _region_for_node(
+    regions: list[RegionRecord], page_no: int | None, position: int | None
+) -> RegionRecord:
+    """Resolve a node's region by page number (PDF) or, when no page number
+    exists at all (DOCX, addendum §5), by its position in document order.
+    Regions built from page-based segmentation never set `sequence_start`/
+    `sequence_end`, so the position branch is naturally a no-op for PDFs.
+    """
     if page_no is not None:
         for region in regions:
-            if region.page_start <= page_no <= region.page_end:
+            if region.page_start is not None and region.page_start <= page_no <= region.page_end:
+                return region
+    elif position is not None:
+        for region in regions:
+            if (
+                region.sequence_start is not None
+                and region.sequence_end is not None
+                and region.sequence_start <= position <= region.sequence_end
+            ):
                 return region
     return regions[-1]
 
@@ -227,18 +242,27 @@ def build_tree(
     sibling_sequence: dict[uuid.UUID | None, int] = {}
     # GroupItem nodes have no page (and so no real region) until their
     # descendants' pages are backfilled below — re-resolve region_id for
-    # these once actual pages are known, rather than defaulting to whatever
-    # `_region_for_page(regions, None)` falls back to.
+    # these once actual pages/positions are known, rather than defaulting to
+    # whatever `_region_for_node(regions, None, None)` falls back to.
     needs_region_backfill: list[NodeSpec] = []
+    # Position is a DOCX-only fallback axis (no page numbers exist there at
+    # all, addendum §5) — counted over the same non-group items region
+    # segmentation's `_collect_position_stats` counts, so the two line up.
+    position_by_node_id: dict[uuid.UUID, int] = {}
+    position_counter = 0
 
     for item, doc_level in doc.iterate_items(with_groups=True, traverse_pictures=False):
         is_group = isinstance(item, GroupItem)
         page_no = None if is_group else (item.prov[0].page_no if item.prov else None)
+        position: int | None = None
+        if not is_group:
+            position = position_counter
+            position_counter += 1
 
         parent = parent_at_level.get(doc_level - 1) if doc_level > 0 else None
         parent_id = parent.id if parent else None
 
-        region = _region_for_page(regions, page_no)
+        region = _region_for_node(regions, page_no, position)
 
         text_value: str | None = None
         if isinstance(item, TextItem):
@@ -295,6 +319,9 @@ def build_tree(
 
         if is_group:
             needs_region_backfill.append(node)
+        else:
+            assert position is not None
+            position_by_node_id[node.id] = position
 
         nodes.append(node)
         parent_at_level[doc_level] = node
@@ -307,9 +334,12 @@ def build_tree(
         node.next_id = next_id_by_previous.get(node.id)
 
     _backfill_group_page_ranges(nodes)
+    _resolve_group_positions(nodes, position_by_node_id)
 
     for node in needs_region_backfill:
-        node.region_id = _region_for_page(regions, node.page_start).id
+        node.region_id = _region_for_node(
+            regions, node.page_start, position_by_node_id.get(node.id)
+        ).id
     return nodes
 
 
@@ -344,6 +374,35 @@ def _backfill_group_page_ranges(nodes: list[NodeSpec]) -> None:
             resolve(node)
 
 
+def _resolve_group_positions(
+    nodes: list[NodeSpec], position_by_node_id: dict[uuid.UUID, int]
+) -> None:
+    """Position analogue of `_backfill_group_page_ranges` — only meaningful
+    for a non-paginated document (DOCX), where `position_by_node_id` starts
+    populated for leaf nodes only. A group's position is its earliest
+    descendant's, so it still resolves to the region that descendant is in.
+    """
+    children_by_parent: dict[uuid.UUID, list[NodeSpec]] = {}
+    for node in nodes:
+        if node.parent_id is not None:
+            children_by_parent.setdefault(node.parent_id, []).append(node)
+
+    def resolve(node: NodeSpec) -> int | None:
+        if node.id in position_by_node_id:
+            return position_by_node_id[node.id]
+        positions = [
+            child_position
+            for child in children_by_parent.get(node.id, [])
+            if (child_position := resolve(child)) is not None
+        ]
+        if positions:
+            position_by_node_id[node.id] = min(positions)
+        return position_by_node_id.get(node.id)
+
+    for node in nodes:
+        resolve(node)
+
+
 def add_unknown_blocks_for_uncovered_pages(
     nodes: list[NodeSpec], regions: list[RegionRecord], all_page_numbers: list[int]
 ) -> None:
@@ -370,7 +429,7 @@ def add_unknown_blocks_for_uncovered_pages(
     for page_no in all_page_numbers:
         if page_no in covered:
             continue
-        region = _region_for_page(regions, page_no)
+        region = _region_for_node(regions, page_no, None)
         nodes.append(
             NodeSpec(
                 id=uuid.uuid4(),

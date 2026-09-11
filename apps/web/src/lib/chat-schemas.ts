@@ -14,8 +14,10 @@ export type Citation = {
   document_id: string;
   document_title: string;
   structural_path_text: string | null;
-  page_start: number;
-  page_end: number;
+  // Null for DOCX-derived evidence — no stable page number exists there at
+  // all; structural_path_text is the real citation location.
+  page_start: number | null;
+  page_end: number | null;
   original_text_excerpt: string;
 };
 

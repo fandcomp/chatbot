@@ -11,6 +11,20 @@ from sqlalchemy import text
 from app.database import engine
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _clear_embedding_cache() -> AsyncGenerator[None, None]:
+    """The embedding cache (LAN-M3, addendum §5) is deliberately global, not
+    org-scoped — so it survives `seeded_document_version`'s per-test teardown
+    below. Tests that reuse the same literal chunk text across runs would
+    otherwise see cache hits leak between them (e.g. a test asserting
+    `embed_documents` was called would flake once a prior test's row cached
+    that exact text/config). Cleared after every test, not just LAN-M3's own.
+    """
+    yield
+    async with engine.begin() as conn:
+        await conn.execute(text("DELETE FROM embedding_cache_entries"))
+
+
 @pytest_asyncio.fixture
 async def seeded_document_version() -> AsyncGenerator[dict, None]:
     org_id = uuid.uuid4()

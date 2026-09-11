@@ -110,8 +110,8 @@ export function TestKnowledgePanel({ documentId }: Props) {
                     <li key={sourceId} className="text-xs text-muted-foreground">
                       <span className="font-medium text-foreground">{sourceId}</span> —{" "}
                       {citation.document_title}
-                      {citation.structural_path_text ? `, ${citation.structural_path_text}` : ""},
-                      p.{citation.page_start}
+                      {citation.structural_path_text ? `, ${citation.structural_path_text}` : ""}
+                      {citation.page_start !== null ? `, p.${citation.page_start}` : ""}
                     </li>
                   ))}
                 </ul>

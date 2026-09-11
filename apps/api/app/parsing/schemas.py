@@ -9,8 +9,9 @@ from app.parsing.models import DocumentNodeType, SemanticRole, StructuralRegionT
 class StructureRegionPublic(BaseModel):
     id: uuid.UUID
     region_type: StructuralRegionType
-    page_start: int
-    page_end: int
+    # None for a DOCX-derived region — no stable page number exists there.
+    page_start: int | None
+    page_end: int | None
     sequence_number: int
     confidence: float
 
@@ -28,8 +29,10 @@ class StructureNodePublic(BaseModel):
     number_normalized: str | None
     depth: int
     sequence_number: int
-    page_start: int
-    page_end: int
+    # None for a DOCX-derived node — no stable page number exists there at
+    # all; structural_path_text is the real location.
+    page_start: int | None
+    page_end: int | None
     confidence: float
     structural_path_json: list[dict]
     structural_path_text: str | None
