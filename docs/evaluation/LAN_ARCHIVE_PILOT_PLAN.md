@@ -28,18 +28,22 @@ data Postgres doesn't have a copy of. Back up accordingly, not uniformly.
 | **`embedding_cache_entries`** (LAN-M3) | Pure performance optimization, content-addressable | None needed | Losing it entirely is safe — the next embedding call for that text/config just becomes a cache miss and re-embeds (budget-gated as normal). Never a backup priority. |
 | **Redis** (answer cache, rate limiting) | Ephemeral, TTL-bound | None needed | Empty cache on restore is correct behavior, not a degraded state. |
 
-**Known gap to flag, not silently worked around**: if a worker crashes
-between `reserve_ingestion_budget` and `settle_usage`/`release_reservation`
+**Closed**: if a worker crashes between `reserve_ingestion_budget` and
+`settle_usage`/`release_reservation`
 (`workers/document_worker/app/indexing/budget.py`), a `usage_ledger_entries`
-row can be left `RESERVED` indefinitely, permanently reducing that
-organization's usable budget headroom by the reserved amount. Celery's
-`autoretry_for`/`self.retry()` on `index_document` covers the *job*
-retrying, but a genuinely lost worker process (not just a retried task)
-before settlement is not yet reconciled automatically. A periodic
-reconciliation job (release any `RESERVED` entry older than some threshold
-with no matching job progress) is recommended before relying on this at
-real production budget volumes — not built in LAN-M5, recorded here rather
-than silently assumed handled.
+row could previously be left `RESERVED` indefinitely, permanently reducing
+that organization's usable budget headroom by the reserved amount. Celery's
+`autoretry_for`/`self.retry()` on `index_document` only ever covered the
+*job* retrying, never a genuinely lost worker process before settlement.
+`reconcile_stale_reservations()` now releases any `RESERVED` entry older
+than `BUDGET_RESERVATION_STALE_SECONDS` (1800s default), wired as the
+`document_worker.reconcile_stale_budget_reservations` Celery task with a
+15-minute `beat_schedule` entry. **Operational caveat**: this only actually
+fires if a `celery beat` process is running — this repo doesn't deploy one
+yet (see `workers/document_worker/README.md`'s manual-invocation command).
+Confirm `celery beat` is part of the deployment, or schedule the manual
+invocation externally, before relying on this at real production budget
+volumes.
 
 ## Rollback plan
 
@@ -64,16 +68,14 @@ different granularities — don't conflate them operationally:
    worker's stale lease is reclaimed by a later attempt; no promotion is
    silently lost or duplicated.
 
-**Gap to flag before relying on it operationally**: there is currently no
-"disable this `SourceRoot`" or "stop further promotion from this source"
-endpoint (`apps/api/app/sources/router.py` has `create`/`list`/
-`trigger_scan`/`list_scan_runs`/`list_entries`/`promote_entries` — no
-disable/delete). If a whole registered source turns out to be
-misconfigured (wrong root, wrong credentials, wrong scope), the current
-stop-gap is: don't trigger further scans/promotions against it, and archive
-(#1 above) any documents already promoted from it that shouldn't be active.
-A dedicated disable endpoint is not built — recommended as a pre-flight
-check for Phase 0 below, not assumed to already exist.
+**Closed**: `POST /sources/{id}/disable` (OWNER/ADMIN) now stops a
+misconfigured `SourceRoot` from accepting new scans/promotions —
+`trigger_scan`/`promote_entries` return 409 while disabled — without
+deleting the source or its already-promoted documents. `POST
+/sources/{id}/enable` reverses it. If some already-promoted documents
+shouldn't stay active, archive them separately (#1 above). Verify at Phase
+0 below that the source is enabled (it is, by default) rather than
+assuming disable is unnecessary to know about.
 
 ## Staged production rollout guidance
 

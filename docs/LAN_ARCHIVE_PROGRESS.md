@@ -2,6 +2,45 @@
 
 Checkpoint doc for the LAN archive ingestion track (`docs/LAN_ARCHIVE_IMPLEMENTATION_PLAN.md`). Updated at the end of each milestone so the next session can resume without re-auditing from scratch.
 
+## LAN-M6 follow-up: closed the two gaps found while writing the rollout guidance
+
+Not a new milestone — LAN-M6's own acceptance criteria were already met (see below). These are the two concrete, non-access-blocked gaps LAN-M6 recorded but didn't build, picked up separately since they're real engineering tasks rather than the external client-access dependency the rest of LAN-M6 is stuck on.
+
+1. **`SourceRoot` disable/delete endpoint.** Added `source_roots.is_enabled` (default `true`, additive migration `b6e2f0a3c1d4`) plus `POST /sources/{id}/disable` and `POST /sources/{id}/enable` (OWNER/ADMIN only). `trigger_scan` and `promote_entries` now return 409 for a disabled source instead of silently proceeding. Deliberately a soft toggle, never a hard delete — a disabled source's `SourceEntry`/`PromotionRecord`/already-promoted `Document` rows must survive so the mitigation is "stop it," not "lose its history." Tests: `apps/api/tests/unit/test_sources_rbac.py`.
+2. **Automatic reconciliation for stranded `RESERVED` budget entries.** Added `reconcile_stale_reservations()` (`workers/document_worker/app/indexing/budget.py`) — releases any `usage_ledger_entries` row still `RESERVED` past `BUDGET_RESERVATION_STALE_SECONDS` (default 1800s), using the same atomic-conditional-UPDATE claim idiom as `reserve_ingestion_budget` so a reservation settling/releasing through the normal path at the same moment can never be double-released. Wrapped as the `document_worker.reconcile_stale_budget_reservations` Celery task with a 15-minute `beat_schedule` entry — **only fires once a `celery beat` process actually runs**, which this repo doesn't deploy yet (see `workers/document_worker/README.md` for the manual-invocation fallback). Tests: `workers/document_worker/tests/test_budget.py`.
+
+Neither gap needed real LAN/SMB access to close — both were pure backend logic against the existing schema/pipeline.
+
+### Files changed
+
+**apps/api:**
+- `apps/api/app/sources/models.py` — `SourceRoot.is_enabled`
+- `apps/api/app/sources/schemas.py` — `SourceRootPublic.is_enabled`
+- `apps/api/app/sources/router.py` — `disable_source`/`enable_source`, 409 guard in `trigger_scan`/`promote_entries`
+- `apps/api/alembic/versions/b6e2f0a3c1d4_add_source_root_is_enabled.py` — new migration
+- `apps/api/tests/unit/test_sources_rbac.py` — 6 new tests
+
+**workers/document_worker:**
+- `workers/document_worker/app/indexing/budget.py` — `reconcile_stale_reservations()`
+- `workers/document_worker/app/tasks.py` — `reconcile_stale_budget_reservations` task
+- `workers/document_worker/app/celery_app.py` — `beat_schedule` entry
+- `workers/document_worker/app/core/config.py` — `BUDGET_RESERVATION_STALE_SECONDS`
+- `workers/document_worker/README.md` — beat/manual-invocation docs
+- `workers/document_worker/tests/test_budget.py` — 4 new tests
+
+### Test commands and results
+
+```
+cd apps/api && uv run pytest -q                          -> 220 passed (was 215)
+cd workers/document_worker && uv run pytest -q \
+  --ignore=tests/test_parse_document.py --ignore=tests/test_pipeline.py \
+  --ignore=tests/test_region_segmenter.py --ignore=tests/test_tree_builder.py
+                                                            -> 128 passed, 1 skipped (was 124)
+cd workers/document_worker && uv run pytest tests/test_parse_document.py \
+  tests/test_pipeline.py tests/test_region_segmenter.py tests/test_tree_builder.py -q
+                                                            -> 23 passed (untouched by this pass)
+```
+
 ## LAN-M6: Pilot and operations guide — **partial, blocked on real client access**
 
 LAN-M6 depends on "a working LAN-M1..LAN-M5 pipeline **and client-provided access/credentials**" (implementation plan). The pipeline dependency is now satisfied (LAN-M1-M5 complete); the client-access dependency is not — no real Windows LAN/SMB share has ever been reachable from this dev environment, same blocker every prior milestone recorded.
@@ -27,8 +66,7 @@ Reservation/settlement (LAN-M5's `budget.py`) has no automatic recovery if a wor
 ### Explicitly deferred / blocked (recorded, not silently dropped)
 
 - **Representative sampling** (300-500 documents), **cost projection**, **real benchmarks** (OCR/embedding throughput, LAN transfer rate, chat latency idle-vs-active), **retrieval evaluation on real Indonesian regulatory queries** — all need real client access/data this environment doesn't have. See `docs/evaluation/LAN_ARCHIVE_PILOT_PLAN.md`'s "Blocked pending real client access/credentials" section.
-- **Automatic reconciliation for stranded `RESERVED` budget entries** — found and recorded above, not built.
-- **A `SourceRoot` disable/delete endpoint** — found and recorded above, not built (pre-existing gap since LAN-M1, only surfaced now while writing operational guidance).
+- ~~Automatic reconciliation for stranded `RESERVED` budget entries~~ and ~~a `SourceRoot` disable/delete endpoint~~ — both closed in the LAN-M6 follow-up section above (didn't need real access).
 
 ### Blockers
 

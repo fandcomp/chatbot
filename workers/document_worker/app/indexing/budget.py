@@ -11,7 +11,7 @@ always raises BudgetExceededError, the same as a budget with no room left.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -190,3 +190,63 @@ async def release_reservation(session: AsyncSession, ledger_entry_id: uuid.UUID)
         .values(status="RELEASED")
     )
     await session.commit()
+
+
+async def reconcile_stale_reservations(
+    session: AsyncSession, *, stale_after_seconds: int
+) -> list[uuid.UUID]:
+    """LAN-M6 gap (found writing the pilot rollout guide): a worker process
+    killed between `reserve_ingestion_budget` and `settle_usage`/
+    `release_reservation` — not just a retried Celery task, the process
+    itself lost — leaves a RESERVED ledger entry forever, permanently
+    shrinking that org's real budget headroom for work that never happened.
+    No normal call path takes anywhere near `stale_after_seconds` to go from
+    reserve to settle/release, so any RESERVED entry older than that is
+    dead, not merely slow.
+
+    Meant to run periodically (see the `reconcile_stale_budget_reservations`
+    Celery task and its beat schedule), not from the indexing pipeline
+    itself. Reuses the same atomic-claim idiom as `reserve_ingestion_budget`:
+    one conditional `UPDATE ... WHERE status = 'RESERVED'` per entry, so an
+    entry that settles/releases through the normal path at the exact same
+    moment can never be double-released — zero rows affected means "already
+    handled elsewhere," not a race to correct.
+    """
+    cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_seconds)
+    stale_ids = (
+        await session.execute(
+            select(usage_ledger_entries.c.id).where(
+                usage_ledger_entries.c.status == "RESERVED",
+                usage_ledger_entries.c.created_at < cutoff,
+            )
+        )
+    ).scalars().all()
+
+    reconciled: list[uuid.UUID] = []
+    for entry_id in stale_ids:
+        claimed = (
+            await session.execute(
+                update(usage_ledger_entries)
+                .where(
+                    usage_ledger_entries.c.id == entry_id,
+                    usage_ledger_entries.c.status == "RESERVED",
+                )
+                .values(status="RELEASED")
+                .returning(usage_ledger_entries.c.budget_id, usage_ledger_entries.c.amount_usd)
+            )
+        ).mappings().one_or_none()
+        if claimed is None:
+            continue
+
+        await session.execute(
+            update(budgets)
+            .where(budgets.c.id == claimed["budget_id"])
+            .values(
+                reserved_usd=budgets.c.reserved_usd - claimed["amount_usd"],
+                updated_at=datetime.now(UTC),
+            )
+        )
+        reconciled.append(entry_id)
+
+    await session.commit()
+    return reconciled

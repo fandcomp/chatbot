@@ -8,7 +8,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -97,6 +97,12 @@ class SourceRoot(Base):
         nullable=False,
         default=SourceHealth.UNKNOWN,
     )
+    # LAN-M6 gap (found writing the pilot rollout guide): registering a
+    # source had no corresponding way to stop it. A disabled source is kept
+    # (never deleted — its SourceEntry/PromotionRecord/already-promoted
+    # Document rows must survive), it just stops accepting new scans/
+    # promotions (see trigger_scan/promote_entries in router.py).
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     health_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

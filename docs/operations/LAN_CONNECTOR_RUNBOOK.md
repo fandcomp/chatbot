@@ -61,12 +61,14 @@ otherwise, and record that confirmation in `docs/LAN_ARCHIVE_PROGRESS.md`.
 - **File locks / in-progress copies**: LAN-M1 only catalogs metadata; it
   does not open file contents, so lock contention is not yet a concern.
   This becomes relevant starting LAN-M2 (snapshot/transfer).
-- **No "disable this source" endpoint**: registering a `SourceRoot` has no
-  corresponding disable/delete action today. If a source turns out to be
-  misconfigured, the mitigation is to stop triggering scans/promotions
-  against it and archive any already-promoted documents that shouldn't be
-  active (`POST /documents/{id}/archive`) — see
+- **Disabling a misconfigured source**: `POST /sources/{id}/disable`
+  (OWNER/ADMIN) stops it from accepting new scans/promotions — `POST
+  /sources/{id}/scan` and `POST /sources/{id}/entries/promote` both return
+  409 while disabled. It never deletes the source or any already-promoted
+  documents; if some of those shouldn't stay active, archive them
+  separately (`POST /documents/{id}/archive`) — see
   `docs/evaluation/LAN_ARCHIVE_PILOT_PLAN.md`'s rollback plan.
+  `POST /sources/{id}/enable` reverses it.
 
 ## Troubleshooting
 

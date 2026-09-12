@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import insert, select, text
+from sqlalchemy import insert, select, text, update
 
 from app.core.config import settings
 from app.database import (
@@ -18,6 +18,7 @@ from app.database import (
 from app.indexing.budget import (
     BudgetExceededError,
     get_current_rate,
+    reconcile_stale_reservations,
     release_reservation,
     reserve_ingestion_budget,
     settle_usage,
@@ -270,6 +271,122 @@ async def test_release_reservation_gives_back_reserved_without_charging_spent(
     assert float(budget_row["reserved_usd"]) == 0.0
     assert float(budget_row["spent_usd"]) == 0.0
     assert entry_row["status"] == "RELEASED"
+
+
+async def _backdate_entry(entry_id: uuid.UUID, age: timedelta) -> None:
+    async with async_session_factory() as session:
+        await session.execute(
+            update(usage_ledger_entries)
+            .where(usage_ledger_entries.c.id == entry_id)
+            .values(created_at=datetime.now(UTC) - age)
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_reservations_releases_an_old_reserved_entry(
+    org_id, rate, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "INGESTION_BUDGET_DEFAULT_USD", 100.0)
+
+    async with async_session_factory() as session:
+        entry_id = await reserve_ingestion_budget(
+            session,
+            organization_id=org_id,
+            source_entry_id=None,
+            job_id=None,
+            stage="EMBEDDING",
+            provider=_TEST_PROVIDER,
+            token_count=1000,
+        )
+    await _backdate_entry(entry_id, timedelta(hours=1))
+
+    async with async_session_factory() as session:
+        reconciled = await reconcile_stale_reservations(session, stale_after_seconds=1800)
+
+    assert entry_id in reconciled
+
+    async with async_session_factory() as session:
+        budget_row = (
+            await session.execute(select(budgets).where(budgets.c.organization_id == org_id))
+        ).mappings().one()
+        entry_row = (
+            await session.execute(
+                select(usage_ledger_entries).where(usage_ledger_entries.c.id == entry_id)
+            )
+        ).mappings().one()
+
+    assert float(budget_row["reserved_usd"]) == 0.0
+    assert entry_row["status"] == "RELEASED"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_reservations_leaves_a_fresh_reservation_untouched(
+    org_id, rate, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "INGESTION_BUDGET_DEFAULT_USD", 100.0)
+
+    async with async_session_factory() as session:
+        entry_id = await reserve_ingestion_budget(
+            session,
+            organization_id=org_id,
+            source_entry_id=None,
+            job_id=None,
+            stage="EMBEDDING",
+            provider=_TEST_PROVIDER,
+            token_count=1000,
+        )
+
+    async with async_session_factory() as session:
+        reconciled = await reconcile_stale_reservations(session, stale_after_seconds=1800)
+
+    assert entry_id not in reconciled
+
+    async with async_session_factory() as session:
+        budget_row = (
+            await session.execute(select(budgets).where(budgets.c.organization_id == org_id))
+        ).mappings().one()
+    assert float(budget_row["reserved_usd"]) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_reconcile_stale_reservations_never_touches_an_already_settled_entry(
+    org_id, rate, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "INGESTION_BUDGET_DEFAULT_USD", 100.0)
+
+    async with async_session_factory() as session:
+        entry_id = await reserve_ingestion_budget(
+            session,
+            organization_id=org_id,
+            source_entry_id=None,
+            job_id=None,
+            stage="EMBEDDING",
+            provider=_TEST_PROVIDER,
+            token_count=1000,
+        )
+    async with async_session_factory() as session:
+        await settle_usage(session, entry_id)
+    await _backdate_entry(entry_id, timedelta(hours=1))
+
+    async with async_session_factory() as session:
+        reconciled = await reconcile_stale_reservations(session, stale_after_seconds=1800)
+
+    assert entry_id not in reconciled
+
+    async with async_session_factory() as session:
+        budget_row = (
+            await session.execute(select(budgets).where(budgets.c.organization_id == org_id))
+        ).mappings().one()
+        entry_row = (
+            await session.execute(
+                select(usage_ledger_entries).where(usage_ledger_entries.c.id == entry_id)
+            )
+        ).mappings().one()
+
+    assert float(budget_row["spent_usd"]) == 1.0
+    assert float(budget_row["reserved_usd"]) == 0.0
+    assert entry_row["status"] == "SETTLED"
 
 
 @pytest.mark.asyncio

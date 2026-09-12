@@ -35,7 +35,7 @@ from app.database import (
     documents,
     processing_jobs,
 )
-from app.indexing.budget import BudgetExceededError
+from app.indexing.budget import BudgetExceededError, reconcile_stale_reservations
 from app.indexing.embedding_gateway import EmbeddingGateway
 from app.indexing.pipeline import build_indexing_points
 from app.indexing.qdrant_writer import ensure_collection, upsert_chunks
@@ -851,3 +851,25 @@ async def _index_document_async(self, job_id: str, attempts: int) -> None:
 )
 def index_document(self, job_id: str) -> None:
     asyncio.run(_index_document_async(self, job_id, attempts=self.request.retries + 1))
+
+
+@celery_app.task(name="document_worker.reconcile_stale_budget_reservations")
+def reconcile_stale_budget_reservations() -> int:
+    """LAN-M6 gap: recovers `usage_ledger_entries` rows left permanently
+    RESERVED by a worker process killed mid-embedding (see
+    `reconcile_stale_reservations`'s docstring). Scheduled via
+    `celery_app.conf.beat_schedule` — requires a `celery beat` process
+    running alongside the worker to actually fire; invoke manually
+    (`celery -A app.celery_app call document_worker.reconcile_stale_budget_reservations`)
+    until this deployment runs beat. Returns the count reconciled, for
+    operator visibility in Celery's own task result/logs.
+    """
+
+    async def _run() -> int:
+        async with async_session_factory() as session:
+            reconciled = await reconcile_stale_reservations(
+                session, stale_after_seconds=settings.BUDGET_RESERVATION_STALE_SECONDS
+            )
+        return len(reconciled)
+
+    return asyncio.run(_run())

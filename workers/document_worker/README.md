@@ -32,6 +32,20 @@ uv run celery -A app.celery_app worker --loglevel=info --pool=solo   # --pool=so
 
 Requires `docker compose up -d` (Postgres + Redis + MinIO) and `apps/api`'s migrations already applied (`uv run alembic upgrade head` from `apps/api`) — this worker reads a schema it doesn't own or migrate itself.
 
+### LAN-M5/M6: budget reservation reconciliation
+
+`document_worker.reconcile_stale_budget_reservations` recovers ingestion-budget reservations stranded `RESERVED` by a worker process killed mid-embedding (see `app/indexing/budget.py`'s `reconcile_stale_reservations`). It has a `beat_schedule` entry (every 15 minutes) in `app/celery_app.py`, but **only fires if a `celery beat` process is actually running** — this repo doesn't deploy one yet:
+
+```bash
+uv run celery -A app.celery_app beat --loglevel=info
+```
+
+Until beat is part of the deployment, run it manually or from an external scheduler:
+
+```bash
+uv run celery -A app.celery_app call document_worker.reconcile_stale_budget_reservations
+```
+
 ### Tests
 
 ```bash

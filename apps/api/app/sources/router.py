@@ -96,6 +96,37 @@ async def create_source(
     return SourceRootPublic.model_validate(source, from_attributes=True)
 
 
+@router.post("/{source_id}/disable", response_model=SourceRootPublic)
+async def disable_source(
+    source_id: uuid.UUID,
+    membership: OrganizationMember = Depends(require_role(*_MANAGE_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> SourceRootPublic:
+    """LAN-M6 gap: the mitigation for a misconfigured source was previously
+    just "stop clicking scan/promote" — this makes it an actual, enforced
+    stop rather than an operator convention. Never deletes the source or its
+    already-promoted documents; see docs/evaluation/LAN_ARCHIVE_PILOT_PLAN.md.
+    """
+    source = await _get_org_scoped_source(db, source_id, membership.organization_id)
+    source.is_enabled = False
+    await db.commit()
+    await db.refresh(source)
+    return SourceRootPublic.model_validate(source, from_attributes=True)
+
+
+@router.post("/{source_id}/enable", response_model=SourceRootPublic)
+async def enable_source(
+    source_id: uuid.UUID,
+    membership: OrganizationMember = Depends(require_role(*_MANAGE_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> SourceRootPublic:
+    source = await _get_org_scoped_source(db, source_id, membership.organization_id)
+    source.is_enabled = True
+    await db.commit()
+    await db.refresh(source)
+    return SourceRootPublic.model_validate(source, from_attributes=True)
+
+
 @router.get("", response_model=list[SourceRootPublic])
 async def list_sources(
     membership: OrganizationMember = Depends(get_current_membership),
@@ -121,6 +152,11 @@ async def trigger_scan(
     """Enqueues a catalog-only discovery scan — never extracts, embeds, or
     copies file content (LAN-M1 scope, addendum §2)."""
     source = await _get_org_scoped_source(db, source_id, membership.organization_id)
+    if not source.is_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This source is disabled — re-enable it before triggering a scan.",
+        )
 
     scan_run = ScanRun(
         organization_id=membership.organization_id,
@@ -214,7 +250,12 @@ async def promote_entries(
     active PromotionRecord is skipped, not duplicated — re-requesting
     promotion of the same entries is always safe.
     """
-    await _get_org_scoped_source(db, source_id, membership.organization_id)
+    source = await _get_org_scoped_source(db, source_id, membership.organization_id)
+    if not source.is_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This source is disabled — re-enable it before promoting entries.",
+        )
 
     entries = (
         await db.execute(

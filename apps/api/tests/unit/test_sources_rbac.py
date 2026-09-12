@@ -146,3 +146,76 @@ async def test_listing_entries_of_a_freshly_created_source_is_empty(client_facto
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+async def test_a_new_source_is_enabled_by_default(client_factory) -> None:
+    owner = client_factory()
+    await owner.post("/auth/register", json=REGISTER_PAYLOAD)
+    source_id = await _create_source(owner)
+
+    response = await owner.get("/sources")
+
+    assert response.json()[0]["id"] == source_id
+    assert response.json()[0]["is_enabled"] is True
+
+
+async def test_disabling_a_source_blocks_new_scans_and_promotions(client_factory) -> None:
+    # Arrange — a misconfigured source with a promotable catalog entry.
+    owner = client_factory()
+    await owner.post("/auth/register", json=REGISTER_PAYLOAD)
+    source_id = await _create_source(owner)
+
+    # Act
+    disable_response = await owner.post(f"/sources/{source_id}/disable")
+
+    # Assert
+    assert disable_response.status_code == 200
+    assert disable_response.json()["is_enabled"] is False
+
+    scan_response = await owner.post(f"/sources/{source_id}/scan")
+    assert scan_response.status_code == 409
+
+    promote_response = await owner.post(
+        f"/sources/{source_id}/entries/promote",
+        json={"source_entry_ids": ["00000000-0000-0000-0000-000000000000"]},
+    )
+    assert promote_response.status_code == 409
+
+
+async def test_re_enabling_a_source_allows_scans_again(client_factory) -> None:
+    owner = client_factory()
+    await owner.post("/auth/register", json=REGISTER_PAYLOAD)
+    source_id = await _create_source(owner)
+    await owner.post(f"/sources/{source_id}/disable")
+
+    enable_response = await owner.post(f"/sources/{source_id}/enable")
+    assert enable_response.status_code == 200
+    assert enable_response.json()["is_enabled"] is True
+
+    scan_response = await owner.post(f"/sources/{source_id}/scan")
+    assert scan_response.status_code == 201
+
+
+async def test_editor_cannot_disable_a_source(client_factory) -> None:
+    owner, editor = client_factory(), client_factory()
+    await owner.post("/auth/register", json=REGISTER_PAYLOAD)
+    source_id = await _create_source(owner)
+    await _create_member(owner, "editor@acme-regulatory.io", "EDITOR")
+    await editor.post(
+        "/auth/login", json={"email": "editor@acme-regulatory.io", "password": "supersecret123"}
+    )
+
+    response = await editor.post(f"/sources/{source_id}/disable")
+
+    assert response.status_code == 403
+
+
+async def test_cannot_disable_another_organizations_source(client_factory) -> None:
+    owner_a, owner_b = client_factory(), client_factory()
+    await owner_a.post("/auth/register", json=REGISTER_PAYLOAD)
+    await owner_b.post("/auth/register", json=OTHER_ORG_PAYLOAD)
+    source_id = await _create_source(owner_a)
+
+    response = await owner_b.post(f"/sources/{source_id}/disable")
+
+    assert response.status_code == 404

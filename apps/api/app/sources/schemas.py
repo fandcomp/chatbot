@@ -31,6 +31,7 @@ class SourceRootPublic(BaseModel):
     allowed_subtrees: list[str] | None
     health: SourceHealth
     health_checked_at: datetime | None
+    is_enabled: bool
     created_at: datetime
 
 

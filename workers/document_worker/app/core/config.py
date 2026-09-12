@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     # value, not a benchmarked production limit — an admin override
     # endpoint is deferred (admin UI territory).
     INGESTION_BUDGET_DEFAULT_USD: float = 50.0
+    # LAN-M6 gap: a worker process killed between reserve_ingestion_budget
+    # and settle_usage/release_reservation leaves a usage_ledger_entries row
+    # RESERVED forever. No normal reserve-to-settle/release call takes
+    # anywhere near this long, so any RESERVED entry older than this is dead,
+    # not slow — reconcile_stale_reservations() releases it back to the
+    # budget. Pilot value, not benchmarked against real embedding latency.
+    BUDGET_RESERVATION_STALE_SECONDS: int = 1800
 
     # LAN ARCHIVE CONNECTOR (LAN-M1, ADR-020) — mirrors
     # apps/api/app/core/config.py's own CONNECTOR_ALLOWED_HOSTS (hand-synced-
