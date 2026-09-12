@@ -9,8 +9,10 @@ import { ApiError } from "@/lib/api-client";
 import {
   ACTIVE_JOB_STATUSES,
   documentsApi,
+  ROLLBACK_ELIGIBLE_STATUSES,
   type DocumentItem,
   type DocumentLifecycleStatus,
+  type DocumentVersionSummary,
   type ProcessingJobStatus,
 } from "@/lib/documents-api";
 
@@ -38,6 +40,11 @@ export function DocumentList({ refreshToken }: Props) {
   >({});
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedDocumentId, setExpandedDocumentId] = useState<string | null>(null);
+  const [versionsByDocument, setVersionsByDocument] = useState<
+    Record<string, DocumentVersionSummary[]>
+  >({});
+  const [isLoadingVersions, setIsLoadingVersions] = useState(false);
   const versionTargetId = useRef<string | null>(null);
   const versionFileInput = useRef<HTMLInputElement>(null);
   const pollIntervals = useRef<Record<string, ReturnType<typeof setInterval>>>({});
@@ -109,6 +116,39 @@ export function DocumentList({ refreshToken }: Props) {
     }
   }
 
+  async function handleToggleVersions(id: string) {
+    if (expandedDocumentId === id) {
+      setExpandedDocumentId(null);
+      return;
+    }
+
+    setExpandedDocumentId(id);
+    setError(null);
+    setIsLoadingVersions(true);
+    try {
+      const versions = await documentsApi.listVersions(id);
+      setVersionsByDocument((current) => ({ ...current, [id]: versions }));
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Failed to load versions");
+    } finally {
+      setIsLoadingVersions(false);
+    }
+  }
+
+  async function handleRollback(documentId: string, versionId: string) {
+    setError(null);
+    try {
+      await documentsApi.rollbackVersion(documentId, versionId);
+      const [versions] = await Promise.all([
+        documentsApi.listVersions(documentId),
+        documentsApi.listDocuments().then(setDocuments),
+      ]);
+      setVersionsByDocument((current) => ({ ...current, [documentId]: versions }));
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Rollback failed");
+    }
+  }
+
   function handleUploadNewVersionClick(id: string) {
     versionTargetId.current = id;
     versionFileInput.current?.click();
@@ -151,55 +191,92 @@ export function DocumentList({ refreshToken }: Props) {
         {documents.map((document) => (
           <li
             key={document.id}
-            className="flex items-center justify-between rounded-md border border-input px-4 py-3"
+            className="flex flex-col gap-3 rounded-md border border-input px-4 py-3"
           >
-            <div>
-              <p className="text-sm font-medium">{document.title}</p>
-              <p className="text-xs text-muted-foreground">
-                {jobStatusOverrides[document.id] ?? document.latest_version_status}
-              </p>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">{document.title}</p>
+                <p className="text-xs text-muted-foreground">
+                  {jobStatusOverrides[document.id] ?? document.latest_version_status}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                {document.latest_version_status === "REVIEW_REQUIRED" && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    nativeButton={false}
+                    render={<Link href={`/documents/${document.id}/structure`} />}
+                  >
+                    Review structure
+                  </Button>
+                )}
+                {TEST_KNOWLEDGE_STATUSES.has(document.latest_version_status) && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    nativeButton={false}
+                    render={<Link href={`/documents/${document.id}/test`} />}
+                  >
+                    Test Knowledge
+                  </Button>
+                )}
+                {document.latest_version_status === "ACTIVE" && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleArchive(document.id)}
+                  >
+                    Archive
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleUploadNewVersionClick(document.id)}
+                >
+                  New version
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void handleToggleVersions(document.id)}
+                >
+                  {expandedDocumentId === document.id ? "Hide versions" : "Versions"}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => void handleDelete(document.id)}>
+                  Delete
+                </Button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              {document.latest_version_status === "REVIEW_REQUIRED" && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  nativeButton={false}
-                  render={<Link href={`/documents/${document.id}/structure`} />}
-                >
-                  Review structure
-                </Button>
-              )}
-              {TEST_KNOWLEDGE_STATUSES.has(document.latest_version_status) && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  nativeButton={false}
-                  render={<Link href={`/documents/${document.id}/test`} />}
-                >
-                  Test Knowledge
-                </Button>
-              )}
-              {document.latest_version_status === "ACTIVE" && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void handleArchive(document.id)}
-                >
-                  Archive
-                </Button>
-              )}
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => handleUploadNewVersionClick(document.id)}
-              >
-                New version
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => void handleDelete(document.id)}>
-                Delete
-              </Button>
-            </div>
+            {expandedDocumentId === document.id && (
+              <div className="flex flex-col gap-1 border-t border-input pt-3">
+                {isLoadingVersions && !versionsByDocument[document.id] ? (
+                  <p className="text-xs text-muted-foreground">Loading versions…</p>
+                ) : (
+                  (versionsByDocument[document.id] ?? []).map((version) => (
+                    <div
+                      key={version.id}
+                      className="flex items-center justify-between text-xs"
+                    >
+                      <span className="text-muted-foreground">
+                        v{version.version_number} — {version.original_filename} —{" "}
+                        {version.status}
+                      </span>
+                      {ROLLBACK_ELIGIBLE_STATUSES.includes(version.status) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void handleRollback(document.id, version.id)}
+                        >
+                          Rollback to this version
+                        </Button>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </li>
         ))}
       </ul>

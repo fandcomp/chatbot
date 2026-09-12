@@ -226,6 +226,34 @@ async def test_rollback_unknown_document_returns_404(client: AsyncClient) -> Non
     assert response.status_code == 404
 
 
+async def test_list_versions_returns_all_versions_newest_first(client: AsyncClient) -> None:
+    # Arrange
+    document_id, v1_id, v2_id = await _two_version_document(client)
+
+    # Act
+    response = await client.get(f"/documents/{document_id}/versions")
+
+    # Assert
+    assert response.status_code == 200
+    body = response.json()
+    assert [entry["id"] for entry in body] == [str(v2_id), str(v1_id)]
+    assert body[0]["status"] == "ACTIVE"
+    assert body[1]["status"] == "SUPERSEDED"
+
+
+async def test_list_versions_unknown_document_returns_404(client: AsyncClient) -> None:
+    # Arrange
+    await client.post("/auth/register", json=REGISTER_PAYLOAD)
+
+    # Act
+    response = await client.get(
+        "/documents/00000000-0000-0000-0000-000000000000/versions"
+    )
+
+    # Assert
+    assert response.status_code == 404
+
+
 async def test_rollback_invalidates_the_answer_cache(client: AsyncClient) -> None:
     # Arrange
     document_id, v1_id, _v2_id = await _two_version_document(client)

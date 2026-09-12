@@ -23,6 +23,7 @@ from app.documents.schemas import (
     CreateRelationRequest,
     DocumentPublic,
     DocumentRelationPublic,
+    DocumentVersionPublic,
     RollbackResult,
 )
 from app.indexing.qdrant_client import delete_document_points
@@ -120,6 +121,33 @@ async def get_document(
 ) -> DocumentPublic:
     document = await get_org_scoped_document(db, document_id, membership.organization_id)
     return await _to_document_public(db, document)
+
+
+@router.get("/{document_id}/versions", response_model=list[DocumentVersionPublic])
+async def list_document_versions(
+    document_id: uuid.UUID,
+    membership: OrganizationMember = Depends(get_current_membership),
+    db: AsyncSession = Depends(get_db),
+) -> list[DocumentVersionPublic]:
+    """The version-history source the frontend needs to offer a rollback
+    target — `DocumentPublic` above only ever exposes the latest version.
+    """
+    document = await get_org_scoped_document(db, document_id, membership.organization_id)
+    result = await db.execute(
+        select(DocumentVersion)
+        .where(DocumentVersion.document_id == document.id)
+        .order_by(DocumentVersion.version_number.desc())
+    )
+    return [
+        DocumentVersionPublic(
+            id=version.id,
+            version_number=version.version_number,
+            status=version.status,
+            original_filename=version.original_filename,
+            created_at=version.created_at,
+        )
+        for version in result.scalars().all()
+    ]
 
 
 @router.post("/{document_id}/archive", response_model=ArchiveResult)

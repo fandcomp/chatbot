@@ -179,6 +179,31 @@ export type ArchiveResult = {
   status: DocumentLifecycleStatus;
 };
 
+export type DocumentVersionSummary = {
+  id: string;
+  version_number: number;
+  status: DocumentLifecycleStatus;
+  original_filename: string;
+  created_at: string;
+};
+
+// M13's rollback complement to ArchiveResult — restores a SUPERSEDED/ARCHIVED
+// version back to ACTIVE, superseding whatever was previously ACTIVE.
+export type RollbackResult = {
+  document_id: string;
+  document_version_id: string;
+  status: DocumentLifecycleStatus;
+  superseded_version_id: string | null;
+};
+
+// A version can be rolled back to only once it has actually been ACTIVE —
+// mirrors the 409 apps/api/app/documents/router.py's rollback_document_version
+// raises for any other status (e.g. still UPLOADED, or already ACTIVE).
+export const ROLLBACK_ELIGIBLE_STATUSES: DocumentLifecycleStatus[] = [
+  "SUPERSEDED",
+  "ARCHIVED",
+];
+
 export type RetrievedSourcePreview = {
   chunk_id: string;
   structural_path_text: string | null;
@@ -226,6 +251,12 @@ export const documentsApi = {
   },
   archiveDocument: (documentId: string) =>
     apiClient.post<ArchiveResult>(`/documents/${documentId}/archive`),
+  listVersions: (documentId: string) =>
+    apiClient.get<DocumentVersionSummary[]>(`/documents/${documentId}/versions`),
+  rollbackVersion: (documentId: string, versionId: string) =>
+    apiClient.post<RollbackResult>(
+      `/documents/${documentId}/versions/${versionId}/rollback`,
+    ),
 };
 
 export const ACTIVE_JOB_STATUSES: ProcessingJobStatus[] = ["QUEUED", "PROCESSING"];

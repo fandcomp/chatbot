@@ -22,6 +22,14 @@ class ArchiveResult(BaseModel):
     status: DocumentLifecycleStatus
 
 
+class DocumentVersionPublic(BaseModel):
+    id: uuid.UUID
+    version_number: int
+    status: DocumentLifecycleStatus
+    original_filename: str
+    created_at: datetime
+
+
 class RollbackResult(BaseModel):
     document_id: uuid.UUID
     # The version that is now ACTIVE (the rollback target).
