@@ -3,17 +3,31 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from app.documents.models import DocumentLifecycleStatus, DocumentRelationType
+from app.documents.models import (
+    DocumentLifecycleStatus,
+    DocumentRelationType,
+    DocumentVisibility,
+)
 
 
 class DocumentPublic(BaseModel):
     id: uuid.UUID
     title: str
     knowledge_space_id: uuid.UUID
+    visibility: DocumentVisibility
     latest_version_id: uuid.UUID
     latest_version_status: DocumentLifecycleStatus
     latest_processing_job_id: uuid.UUID | None
     created_at: datetime
+
+
+class UpdateVisibilityRequest(BaseModel):
+    visibility: DocumentVisibility
+
+
+class DocumentVisibilityResult(BaseModel):
+    document_id: uuid.UUID
+    visibility: DocumentVisibility
 
 
 class ArchiveResult(BaseModel):

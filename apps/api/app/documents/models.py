@@ -31,6 +31,18 @@ class DocumentLifecycleStatus(str, enum.Enum):
     ARCHIVED = "ARCHIVED"
 
 
+class DocumentVisibility(str, enum.Enum):
+    """spec §53 — access level enforced at retrieval time (ADR-021), never
+    a post-hoc filter on already-retrieved results. Also a "frozen" (§106)
+    Qdrant payload/index field per §48/§49 and ADR-002, though it was never
+    actually populated until ADR-021.
+    """
+
+    PUBLIC = "PUBLIC"
+    INTERNAL = "INTERNAL"
+    RESTRICTED = "RESTRICTED"
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -44,6 +56,11 @@ class Document(Base):
         UUID(as_uuid=True), ForeignKey("knowledge_spaces.id"), nullable=False
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
+    visibility: Mapped[DocumentVisibility] = mapped_column(
+        SAEnum(DocumentVisibility, name="document_visibility"),
+        nullable=False,
+        default=DocumentVisibility.PUBLIC,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

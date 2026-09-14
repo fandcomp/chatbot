@@ -5,8 +5,8 @@ that node's `document_regions` row, and the parent `document_versions`/
 Only fields with real backing data are populated (addendum §21's list,
 narrowed to what this schema actually has). Deliberately excluded — no
 extraction milestone has ever produced them: `tenant_id` (redundant with
-`organization_id`), `document_type`/`document_number`/`document_year`,
-`visibility`.
+`organization_id`), `document_type`/`document_number`/`document_year`.
+`visibility` (ADR-021) is populated below.
 """
 
 import uuid
@@ -20,6 +20,7 @@ def build_chunk_payload(chunk: dict, node: dict, region: dict, version: dict, do
         "document_id": str(chunk["document_id"]),
         "document_version_id": str(chunk["document_version_id"]),
         "document_status": version["status"],
+        "visibility": document["visibility"],
         "node_type": node["node_type"],
         "semantic_role": node["semantic_role"],
         "region_type": region["region_type"],

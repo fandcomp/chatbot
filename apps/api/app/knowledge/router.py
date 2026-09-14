@@ -9,6 +9,7 @@ from app.auth.dependencies import get_current_membership, require_role
 from app.auth.router import limiter, user_or_ip_key
 from app.core.database import get_db
 from app.documents.router import get_org_scoped_document
+from app.documents.visibility_policy import allowed_visibilities_for
 from app.knowledge.models import KnowledgeSpace
 from app.knowledge.schemas import (
     KnowledgeSpaceCreateRequest,
@@ -137,7 +138,11 @@ async def test_knowledge(
 
     service = TestKnowledgeService(db)
     response = await service.test(
-        membership.organization_id, membership.user_id, body.document_id, body.query
+        membership.organization_id,
+        membership.user_id,
+        body.document_id,
+        body.query,
+        allowed_visibilities_for(membership.role),
     )
     # M14: TestKnowledgeService.test() logs a QueryLog row via flush() only
     # — without this commit it would be silently discarded when the request

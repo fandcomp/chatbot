@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.analytics.models import QueryLogSource
 from app.analytics.service import AnalyticsService
 from app.citations.service import AdaptiveCitationService
+from app.documents.models import DocumentVisibility
 from app.knowledge.schemas import RetrievedSourcePreview, TestKnowledgeResponse
 from app.llm.answer_schemas import QueryIntent
 from app.llm.answer_service import AnswerGenerationService
@@ -43,10 +44,14 @@ class TestKnowledgeService:
         user_id: uuid.UUID,
         document_id: uuid.UUID,
         query: str,
+        allowed_visibilities: frozenset[DocumentVisibility],
     ) -> TestKnowledgeResponse:
         turn_started = time.perf_counter()
         retrieval_response = await self._retrieval.retrieve(
-            organization_id=organization_id, query=query, document_id=document_id
+            organization_id=organization_id,
+            query=query,
+            allowed_visibilities=allowed_visibilities,
+            document_id=document_id,
         )
         evidence_response = await self._reranking.select_evidence(retrieval_response)
         retrieval_latency_ms = int((time.perf_counter() - turn_started) * 1000)

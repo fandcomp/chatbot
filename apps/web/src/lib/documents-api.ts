@@ -1,6 +1,6 @@
 import type { components } from "@chatbot/schemas/src/api-types";
 import { apiClient } from "@/lib/api-client";
-import type { Citation, DocumentRelationType } from "@/lib/chat-schemas";
+import type { Citation, DocumentRelationType, DocumentVisibility } from "@/lib/chat-schemas";
 
 export type KnowledgeSpace = {
   id: string;
@@ -19,10 +19,20 @@ export type DocumentItem = {
   id: string;
   title: string;
   knowledge_space_id: string;
+  visibility: DocumentVisibility;
   latest_version_id: string;
   latest_version_status: DocumentLifecycleStatus;
   latest_processing_job_id: string | null;
   created_at: string;
+};
+
+// ADR-021 — display order for the admin visibility control, least to most
+// sensitive.
+export const VISIBILITY_OPTIONS: DocumentVisibility[] = ["PUBLIC", "INTERNAL", "RESTRICTED"];
+
+export type DocumentVisibilityResult = {
+  document_id: string;
+  visibility: DocumentVisibility;
 };
 
 export type UploadResponse = {
@@ -273,6 +283,10 @@ export const documentsApi = {
   },
   archiveDocument: (documentId: string) =>
     apiClient.post<ArchiveResult>(`/documents/${documentId}/archive`),
+  updateVisibility: (documentId: string, visibility: DocumentVisibility) =>
+    apiClient.patch<DocumentVisibilityResult>(`/documents/${documentId}/visibility`, {
+      visibility,
+    }),
   listVersions: (documentId: string) =>
     apiClient.get<DocumentVersionSummary[]>(`/documents/${documentId}/versions`),
   rollbackVersion: (documentId: string, versionId: string) =>

@@ -9,6 +9,7 @@ from app.auth.router import limiter, user_or_ip_key
 from app.citations.service import AdaptiveCitationService
 from app.core.config import settings
 from app.core.database import get_db
+from app.documents.visibility_policy import allowed_visibilities_for
 from app.knowledge.models import KnowledgeSpace
 from app.llm.answer_schemas import QueryIntent
 from app.llm.answer_service import AnswerGenerationService
@@ -60,6 +61,7 @@ async def answer(
             retrieval_service.retrieve(
                 organization_id=membership.organization_id,
                 query=body.query,
+                allowed_visibilities=allowed_visibilities_for(membership.role),
                 knowledge_space_id=body.knowledge_space_id,
             ),
             timeout=settings.RETRIEVAL_TIMEOUT,

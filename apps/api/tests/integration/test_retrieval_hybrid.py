@@ -96,6 +96,7 @@ async def test_hybrid_search_fuses_dense_and_sparse_with_tenant_filter(client_fa
                     "document_id": str(document_id),
                     "document_version_id": str(version_id),
                     "document_status": "ACTIVE",
+                    "visibility": "PUBLIC",
                     "chunk_id": str(chunk_id),
                 },
             )

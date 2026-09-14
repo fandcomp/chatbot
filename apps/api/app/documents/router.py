@@ -25,7 +25,9 @@ from app.documents.schemas import (
     DocumentPublic,
     DocumentRelationPublic,
     DocumentVersionPublic,
+    DocumentVisibilityResult,
     RollbackResult,
+    UpdateVisibilityRequest,
 )
 from app.indexing.qdrant_client import delete_document_points
 from app.ingestion.models import ProcessingJob
@@ -81,6 +83,7 @@ async def _to_document_public(db: AsyncSession, document: Document) -> DocumentP
         id=document.id,
         title=document.title,
         knowledge_space_id=document.knowledge_space_id,
+        visibility=document.visibility,
         latest_version_id=version.id,
         latest_version_status=version.status,
         latest_processing_job_id=job_id,
@@ -192,6 +195,43 @@ async def archive_document(
     await AnswerCacheService().invalidate_organization(membership.organization_id)
 
     return ArchiveResult(document_id=document.id, document_version_id=version.id, status=version.status)
+
+
+@router.patch("/{document_id}/visibility", response_model=DocumentVisibilityResult)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
+async def update_document_visibility(
+    request: Request,
+    document_id: uuid.UUID,
+    payload: UpdateVisibilityRequest,
+    membership: OrganizationMember = Depends(require_role(OrgRole.OWNER, OrgRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> DocumentVisibilityResult:
+    """ADR-021: narrower than the OWNER/ADMIN/EDITOR gate used for archive/
+    rollback/relations — setting a document to RESTRICTED is itself a
+    sensitive action, not a routine editorial one.
+    """
+    document = await get_org_scoped_document(db, document_id, membership.organization_id)
+    old_visibility = document.visibility
+    document.visibility = payload.visibility
+
+    await log_action(
+        db,
+        actor_id=membership.user_id,
+        organization_id=membership.organization_id,
+        action="document_visibility_change",
+        entity_type="document",
+        entity_id=document.id,
+        old_value={"visibility": old_visibility.value},
+        new_value={"visibility": payload.visibility.value},
+    )
+    await db.commit()
+    await db.refresh(document)
+    # A cached answer citing this document was built under its previous
+    # visibility — a viewer who could see it cached must not keep getting
+    # that answer after it's tightened to RESTRICTED (spec §45).
+    await AnswerCacheService().invalidate_organization(membership.organization_id)
+
+    return DocumentVisibilityResult(document_id=document.id, visibility=document.visibility)
 
 
 @router.post("/{document_id}/versions/{version_id}/rollback", response_model=RollbackResult)

@@ -17,6 +17,11 @@ export type DocumentRelationType =
   | "REFERS_TO"
   | "SUPERSEDED_BY";
 
+// ADR-021 — spec §53's access level, enforced server-side at retrieval
+// time. Client-side use of this type is UX-only (showing/hiding the admin
+// control); the backend's role-based filter is the real enforcement.
+export type DocumentVisibility = "PUBLIC" | "INTERNAL" | "RESTRICTED";
+
 // spec §21 — a relation where the cited document is the "to" side (e.g.
 // another regulation AMENDS/REPEALS/REPLACES it), surfaced so a user citing
 // this document learns it may no longer stand alone even though its own

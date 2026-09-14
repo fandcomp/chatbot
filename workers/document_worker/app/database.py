@@ -80,6 +80,14 @@ _lan_usage_ledger_entry_status = ENUM(
     name="lan_usage_ledger_entry_status",
     create_type=False,
 )
+# ADR-021 — mirrors apps/api/app/documents/models.py's DocumentVisibility.
+_document_visibility = ENUM(
+    "PUBLIC",
+    "INTERNAL",
+    "RESTRICTED",
+    name="document_visibility",
+    create_type=False,
+)
 
 document_versions = Table(
     "document_versions",
@@ -113,6 +121,11 @@ documents = Table(
     Column("organization_id", UUID(as_uuid=True)),
     Column("title", String(255)),
     Column("knowledge_space_id", UUID(as_uuid=True)),
+    # ADR-021: read by build_chunk_payload to populate the Qdrant payload's
+    # `visibility` field. Never written here — the LAN promotion INSERT
+    # (sources_tasks.py) omits it and picks up the column's own
+    # `server_default='PUBLIC'`, same as any other column it doesn't set.
+    Column("visibility", _document_visibility),
 )
 
 processing_jobs = Table(

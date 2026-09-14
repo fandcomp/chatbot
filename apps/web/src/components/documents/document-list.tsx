@@ -7,10 +7,13 @@ import type { ChangeEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { DocumentRelationsPanel } from "@/components/documents/document-relations-panel";
 import { ApiError } from "@/lib/api-client";
+import { useAuth } from "@/lib/auth-context";
+import type { DocumentVisibility } from "@/lib/chat-schemas";
 import {
   ACTIVE_JOB_STATUSES,
   documentsApi,
   ROLLBACK_ELIGIBLE_STATUSES,
+  VISIBILITY_OPTIONS,
   type DocumentItem,
   type DocumentLifecycleStatus,
   type DocumentVersionSummary,
@@ -35,6 +38,13 @@ type Props = {
 };
 
 export function DocumentList({ refreshToken }: Props) {
+  const { state } = useAuth();
+  // ADR-021: setting a document's visibility (especially RESTRICTED) is an
+  // OWNER/ADMIN-only action — hiding the control for EDITOR/VIEWER is a UX
+  // nicety only, never the enforcement (the API still 403s, matching
+  // Sidebar.tsx's canSeeAnalytics precedent).
+  const canEditVisibility =
+    state.status === "authenticated" && (state.role === "OWNER" || state.role === "ADMIN");
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [jobStatusOverrides, setJobStatusOverrides] = useState<
     Record<string, ProcessingJobStatus>
@@ -155,6 +165,18 @@ export function DocumentList({ refreshToken }: Props) {
     setExpandedRelationsId((current) => (current === id ? null : id));
   }
 
+  async function handleChangeVisibility(id: string, visibility: DocumentVisibility) {
+    setError(null);
+    try {
+      await documentsApi.updateVisibility(id, visibility);
+      setDocuments((current) =>
+        current.map((document) => (document.id === id ? { ...document, visibility } : document))
+      );
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Failed to update visibility");
+    }
+  }
+
   function handleUploadNewVersionClick(id: string) {
     versionTargetId.current = id;
     versionFileInput.current?.click();
@@ -207,6 +229,26 @@ export function DocumentList({ refreshToken }: Props) {
                 </p>
               </div>
               <div className="flex items-center gap-2">
+                {canEditVisibility ? (
+                  <select
+                    value={document.visibility}
+                    onChange={(event) =>
+                      void handleChangeVisibility(
+                        document.id,
+                        event.target.value as DocumentVisibility
+                      )
+                    }
+                    className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                  >
+                    {VISIBILITY_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="text-xs text-muted-foreground">{document.visibility}</span>
+                )}
                 {document.latest_version_status === "REVIEW_REQUIRED" && (
                   <Button
                     variant="outline"

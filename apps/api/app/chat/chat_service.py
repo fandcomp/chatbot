@@ -33,6 +33,7 @@ from app.chat.models import Conversation, MessageRole
 from app.chat.service import ConversationService
 from app.citations.service import AdaptiveCitationService
 from app.core.config import settings
+from app.documents.models import DocumentVisibility
 from app.llm.answer_schemas import QueryIntent
 from app.llm.answer_service import AnswerGenerationService
 from app.llm.context_builder import build_streaming_messages
@@ -78,13 +79,18 @@ class ChatService:
         self._answer_cache = AnswerCacheService()
 
     async def _gather_evidence(
-        self, organization_id: uuid.UUID, query: str, knowledge_space_id: uuid.UUID | None
+        self,
+        organization_id: uuid.UUID,
+        query: str,
+        allowed_visibilities: frozenset[DocumentVisibility],
+        knowledge_space_id: uuid.UUID | None,
     ):
         try:
             retrieval_response = await asyncio.wait_for(
                 self._retrieval.retrieve(
                     organization_id=organization_id,
                     query=query,
+                    allowed_visibilities=allowed_visibilities,
                     knowledge_space_id=knowledge_space_id,
                 ),
                 timeout=settings.RETRIEVAL_TIMEOUT,
@@ -97,6 +103,7 @@ class ChatService:
         self,
         conversation: Conversation,
         query: str,
+        allowed_visibilities: frozenset[DocumentVisibility],
         knowledge_space_id: uuid.UUID | None,
     ) -> tuple[uuid.UUID, AnswerResponse]:
         turn_started = time.perf_counter()
@@ -145,7 +152,7 @@ class ChatService:
 
         retrieval_started = time.perf_counter()
         evidence_response = await self._gather_evidence(
-            conversation.organization_id, query, knowledge_space_id
+            conversation.organization_id, query, allowed_visibilities, knowledge_space_id
         )
         retrieval_latency_ms = int((time.perf_counter() - retrieval_started) * 1000)
 
@@ -260,6 +267,7 @@ class ChatService:
         self,
         conversation: Conversation,
         query: str,
+        allowed_visibilities: frozenset[DocumentVisibility],
         knowledge_space_id: uuid.UUID | None,
     ) -> AsyncIterator[tuple[str, str]]:
         """Yields ("token", text) deltas, then a single ("sources", json)
@@ -274,7 +282,7 @@ class ChatService:
 
         retrieval_started = time.perf_counter()
         evidence_response = await self._gather_evidence(
-            conversation.organization_id, query, knowledge_space_id
+            conversation.organization_id, query, allowed_visibilities, knowledge_space_id
         )
         retrieval_latency_ms = int((time.perf_counter() - retrieval_started) * 1000)
 

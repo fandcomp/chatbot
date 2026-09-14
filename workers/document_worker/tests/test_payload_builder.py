@@ -17,7 +17,7 @@ def _version(**overrides) -> dict:
 
 
 def _document(**overrides) -> dict:
-    defaults = dict(knowledge_space_id=_SPACE_ID)
+    defaults = dict(knowledge_space_id=_SPACE_ID, visibility="PUBLIC")
     defaults.update(overrides)
     return defaults
 
@@ -61,6 +61,7 @@ def test_builds_the_expected_field_set_for_an_article_grammar_chunk() -> None:
     assert payload["knowledge_space_id"] == str(_SPACE_ID)
     assert payload["document_id"] == str(_DOCUMENT_ID)
     assert payload["document_status"] == "ACTIVE"
+    assert payload["visibility"] == "PUBLIC"
     assert payload["node_type"] == "ARTICLE"
     assert payload["article"] == "1"
     assert payload["clause"] is None

@@ -22,7 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chunking.models import DocumentChunk
 from app.core.config import settings
-from app.documents.models import Document, DocumentLifecycleStatus, DocumentVersion
+from app.documents.models import (
+    Document,
+    DocumentLifecycleStatus,
+    DocumentVersion,
+    DocumentVisibility,
+)
 from app.indexing.qdrant_client import (
     COLLECTION_NAME,
     DENSE_VECTOR_NAME,
@@ -51,6 +56,7 @@ class RetrievalService:
         self,
         organization_id: uuid.UUID,
         query: str,
+        allowed_visibilities: frozenset[DocumentVisibility],
         knowledge_space_id: uuid.UUID | None = None,
         document_id: uuid.UUID | None = None,
     ) -> RetrievalResponse:
@@ -61,17 +67,23 @@ class RetrievalService:
         being tested may still be APPROVED/INDEXING. Still always scoped by
         organization_id — test mode never crosses tenants. The real chat path
         never passes this.
+
+        `allowed_visibilities` (ADR-021, spec §53) is never optional and
+        never bypassed by `document_id` — Test Knowledge exposes a
+        document's evidence directly, the same content-exposure surface as
+        chat, so an EDITOR testing a document an ADMIN has since marked
+        RESTRICTED must not see its content either.
         """
         reference = parse_legal_reference(query)
         if reference is not None:
             exact_chunks = await self._exact_match(
-                organization_id, knowledge_space_id, reference, document_id
+                organization_id, knowledge_space_id, reference, allowed_visibilities, document_id
             )
             if exact_chunks:
                 return RetrievalResponse(query=query, mode="EXACT_STRUCTURAL", chunks=exact_chunks)
 
         hybrid_chunks = await self._hybrid_search(
-            organization_id, knowledge_space_id, query, document_id
+            organization_id, knowledge_space_id, query, allowed_visibilities, document_id
         )
         return RetrievalResponse(query=query, mode="HYBRID", chunks=hybrid_chunks)
 
@@ -82,22 +94,25 @@ class RetrievalService:
         organization_id: uuid.UUID,
         knowledge_space_id: uuid.UUID | None,
         reference: LegalReference,
+        allowed_visibilities: frozenset[DocumentVisibility],
         document_id: uuid.UUID | None = None,
     ) -> list[RetrievedChunk]:
         stmt = (
             select(DocumentChunk, DocumentNode)
             .join(DocumentNode, DocumentChunk.source_node_id == DocumentNode.id)
             .join(DocumentVersion, DocumentChunk.document_version_id == DocumentVersion.id)
-            .where(DocumentChunk.organization_id == organization_id)
+            .join(Document, DocumentChunk.document_id == Document.id)
+            .where(
+                DocumentChunk.organization_id == organization_id,
+                Document.visibility.in_(allowed_visibilities),
+            )
         )
         if document_id is not None:
             stmt = stmt.where(DocumentChunk.document_id == document_id)
         else:
             stmt = stmt.where(DocumentVersion.status == DocumentLifecycleStatus.ACTIVE)
         if knowledge_space_id is not None:
-            stmt = stmt.join(Document, DocumentChunk.document_id == Document.id).where(
-                Document.knowledge_space_id == knowledge_space_id
-            )
+            stmt = stmt.where(Document.knowledge_space_id == knowledge_space_id)
 
         if reference.kind == "ARTICLE":
             stmt = stmt.where(DocumentNode.article_number == reference.article)
@@ -137,11 +152,14 @@ class RetrievalService:
         organization_id: uuid.UUID,
         knowledge_space_id: uuid.UUID | None,
         query: str,
+        allowed_visibilities: frozenset[DocumentVisibility],
         document_id: uuid.UUID | None = None,
     ) -> list[RetrievedChunk]:
         dense_vector = await self._embedding_gateway.embed_query(query)
         sparse_indices, sparse_values = build_sparse_vector(query)
-        query_filter = self._tenant_filter(organization_id, knowledge_space_id, document_id)
+        query_filter = self._tenant_filter(
+            organization_id, knowledge_space_id, allowed_visibilities, document_id
+        )
 
         client = get_qdrant_client()
         try:
@@ -181,7 +199,7 @@ class RetrievalService:
             return []
 
         return await self._fetch_verified_chunks(
-            organization_id, knowledge_space_id, fused_chunk_ids, scores, document_id
+            organization_id, knowledge_space_id, fused_chunk_ids, scores, allowed_visibilities, document_id
         )
 
     async def _fetch_verified_chunks(
@@ -190,14 +208,17 @@ class RetrievalService:
         knowledge_space_id: uuid.UUID | None,
         chunk_ids: list[str],
         scores: dict[str, float],
+        allowed_visibilities: frozenset[DocumentVisibility],
         document_id: uuid.UUID | None = None,
     ) -> list[RetrievedChunk]:
         stmt = (
             select(DocumentChunk)
             .join(DocumentVersion, DocumentChunk.document_version_id == DocumentVersion.id)
+            .join(Document, DocumentChunk.document_id == Document.id)
             .where(
                 DocumentChunk.id.in_([uuid.UUID(chunk_id) for chunk_id in chunk_ids]),
                 DocumentChunk.organization_id == organization_id,
+                Document.visibility.in_(allowed_visibilities),
             )
         )
         if document_id is not None:
@@ -205,9 +226,7 @@ class RetrievalService:
         else:
             stmt = stmt.where(DocumentVersion.status == DocumentLifecycleStatus.ACTIVE)
         if knowledge_space_id is not None:
-            stmt = stmt.join(Document, DocumentChunk.document_id == Document.id).where(
-                Document.knowledge_space_id == knowledge_space_id
-            )
+            stmt = stmt.where(Document.knowledge_space_id == knowledge_space_id)
 
         chunks_by_id = {
             str(chunk.id): chunk for chunk in (await self._db.execute(stmt)).scalars().all()
@@ -223,11 +242,16 @@ class RetrievalService:
     def _tenant_filter(
         organization_id: uuid.UUID,
         knowledge_space_id: uuid.UUID | None,
+        allowed_visibilities: frozenset[DocumentVisibility],
         document_id: uuid.UUID | None = None,
     ) -> models.Filter:
         must: list[models.Condition] = [
             models.FieldCondition(
                 key="organization_id", match=models.MatchValue(value=str(organization_id))
+            ),
+            models.FieldCondition(
+                key="visibility",
+                match=models.MatchAny(any=[v.value for v in allowed_visibilities]),
             ),
         ]
         if document_id is not None:

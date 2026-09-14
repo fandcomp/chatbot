@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chunking.models import DocumentChunk
-from app.documents.models import Document, DocumentLifecycleStatus, DocumentVersion
+from app.documents.models import Document, DocumentLifecycleStatus, DocumentVersion, DocumentVisibility
 from app.knowledge.models import KnowledgeSpace
 from app.parsing.models import (
     DocumentNode,
@@ -68,6 +68,7 @@ async def seed_active_document(
     title: str = "Test Regulation",
     status: DocumentLifecycleStatus = DocumentLifecycleStatus.ACTIVE,
     source_entry_id: uuid.UUID | None = None,
+    visibility: DocumentVisibility = DocumentVisibility.PUBLIC,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     """Creates Document + DocumentVersion(status) + one DocumentRegion.
 
@@ -75,10 +76,17 @@ async def seed_active_document(
     the real promote_source_entry task does — every retrieval/revocation
     path must treat it identically to a NULL (ordinary upload) version.
 
+    `visibility` (ADR-021) defaults to PUBLIC, matching the column's own
+    default — every existing caller of this fixture keeps behaving exactly
+    as before.
+
     Returns (document_id, version_id, region_id).
     """
     document = Document(
-        organization_id=organization_id, knowledge_space_id=knowledge_space_id, title=title
+        organization_id=organization_id,
+        knowledge_space_id=knowledge_space_id,
+        title=title,
+        visibility=visibility,
     )
     db.add(document)
     await db.flush()

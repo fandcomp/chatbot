@@ -22,6 +22,7 @@ from app.chat.schemas import (
 from app.chat.service import ConversationService
 from app.core.database import get_db
 from app.core.sse import sse_event
+from app.documents.visibility_policy import allowed_visibilities_for
 from app.knowledge.models import KnowledgeSpace
 from app.llm.exceptions import LLMProviderUnavailable
 from app.organizations.models import OrganizationMember, OrgRole
@@ -178,7 +179,7 @@ async def chat(
     chat_service = ChatService(db)
     try:
         message_id, answer_response = await chat_service.answer(
-            conversation, body.query, body.knowledge_space_id
+            conversation, body.query, allowed_visibilities_for(membership.role), body.knowledge_space_id
         )
     except RetrievalTimeout as exc:
         raise HTTPException(
@@ -212,7 +213,7 @@ async def chat_stream(
     async def event_stream() -> AsyncIterator[str]:
         try:
             async for event_type, payload in chat_service.stream_answer(
-                conversation, body.query, body.knowledge_space_id
+                conversation, body.query, allowed_visibilities_for(membership.role), body.knowledge_space_id
             ):
                 if event_type == "sources":
                     yield f"event: sources\ndata: {payload}\n\n"
