@@ -38,7 +38,9 @@ async def _get_org_scoped_space(
 
 
 @router.post("", response_model=KnowledgeSpacePublic, status_code=status.HTTP_201_CREATED)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def create_knowledge_space(
+    request: Request,
     payload: KnowledgeSpaceCreateRequest,
     membership: OrganizationMember = Depends(get_current_membership),
     db: AsyncSession = Depends(get_db),
@@ -83,7 +85,9 @@ async def get_knowledge_space(
 
 
 @router.delete("/{space_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def delete_knowledge_space(
+    request: Request,
     space_id: uuid.UUID,
     membership: OrganizationMember = Depends(require_role(OrgRole.OWNER, OrgRole.ADMIN)),
     db: AsyncSession = Depends(get_db),

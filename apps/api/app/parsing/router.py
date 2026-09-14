@@ -1,11 +1,12 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import log_action
 from app.auth.dependencies import get_current_membership, require_role
+from app.auth.router import limiter, user_or_ip_key
 from app.core.database import get_db
 from app.core.tasks import enqueue_chunk_document
 from app.documents.models import DocumentLifecycleStatus
@@ -128,7 +129,9 @@ async def get_document_structure(
 
 
 @router.patch("/documents/{document_id}/nodes/{node_id}", response_model=StructureNodePublic)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def correct_document_node(
+    request: Request,
     document_id: uuid.UUID,
     node_id: uuid.UUID,
     body: NodeCorrectionRequest,
@@ -248,7 +251,9 @@ async def correct_document_node(
 
 
 @router.post("/documents/{document_id}/approve", response_model=ApprovalResult)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def approve_document_structure(
+    request: Request,
     document_id: uuid.UUID,
     membership: OrganizationMember = Depends(
         require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)

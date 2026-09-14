@@ -102,7 +102,9 @@ async def get_conversation(
 
 
 @router.patch("/conversations/{conversation_id}", response_model=ConversationPublic)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def rename_conversation(
+    request: Request,
     conversation_id: uuid.UUID,
     body: ConversationRenameRequest,
     membership: OrganizationMember = Depends(require_role(*_CHAT_ROLES)),
@@ -121,7 +123,9 @@ async def rename_conversation(
 
 
 @router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def delete_conversation(
+    request: Request,
     conversation_id: uuid.UUID,
     membership: OrganizationMember = Depends(require_role(*_CHAT_ROLES)),
     db: AsyncSession = Depends(get_db),
