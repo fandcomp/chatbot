@@ -128,6 +128,16 @@ export function DocumentList({ refreshToken }: Props) {
     }
   }
 
+  async function handleReprocess(documentId: string, versionId: string) {
+    setError(null);
+    try {
+      await documentsApi.reprocessVersion(documentId, versionId);
+      documentsApi.listDocuments().then(setDocuments).catch(() => undefined);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Reprocess failed");
+    }
+  }
+
   async function handleToggleVersions(id: string) {
     if (expandedDocumentId === id) {
       setExpandedDocumentId(null);
@@ -276,6 +286,15 @@ export function DocumentList({ refreshToken }: Props) {
                     onClick={() => void handleArchive(document.id)}
                   >
                     Archive
+                  </Button>
+                )}
+                {document.latest_version_status === "PROCESSING_FAILED" && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleReprocess(document.id, document.latest_version_id)}
+                  >
+                    Reprocess
                   </Button>
                 )}
                 <Button

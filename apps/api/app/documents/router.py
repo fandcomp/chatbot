@@ -12,6 +12,7 @@ from app.caching.answer_cache import AnswerCacheService
 from app.chunking.models import DocumentChunk
 from app.core.database import get_db
 from app.core.storage import delete_object
+from app.core.tasks import enqueue_verify_upload
 from app.documents.models import (
     Document,
     DocumentLifecycleStatus,
@@ -26,13 +27,14 @@ from app.documents.schemas import (
     DocumentRelationPublic,
     DocumentVersionPublic,
     DocumentVisibilityResult,
+    ReprocessResult,
     RollbackResult,
     UpdateVisibilityRequest,
 )
 from app.indexing.qdrant_client import delete_document_points
-from app.ingestion.models import ProcessingJob
+from app.ingestion.models import ProcessingJob, ProcessingJobStatus
 from app.organizations.models import OrganizationMember, OrgRole
-from app.parsing.models import DocumentNode, DocumentRegion
+from app.parsing.models import DocumentNode, DocumentRegion, DocumentStructureProfile
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -232,6 +234,93 @@ async def update_document_visibility(
     await AnswerCacheService().invalidate_organization(membership.organization_id)
 
     return DocumentVisibilityResult(document_id=document.id, visibility=document.visibility)
+
+
+@router.post("/{document_id}/versions/{version_id}/reprocess", response_model=ReprocessResult)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
+async def reprocess_document_version(
+    request: Request,
+    document_id: uuid.UUID,
+    version_id: uuid.UUID,
+    membership: OrganizationMember = Depends(
+        require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> ReprocessResult:
+    """spec §9/§60: PROCESSING_FAILED -> PROCESSING, manually re-triggered
+    (the worker itself never auto-retries a permanent failure — that's the
+    whole distinction between PROCESSING_FAILED and a transient error
+    Celery's autoretry_for already handles on its own).
+
+    Restarts the ENTIRE pipeline from verify_upload, exactly like a fresh
+    upload — never resumes from whatever stage failed. A version can reach
+    PROCESSING_FAILED after parse_document, interpret_structure, or
+    chunk_document have already committed their own rows for it (each
+    stage's failure handling only rolls back its OWN transaction, not
+    earlier stages' already-committed work), so those rows are deleted
+    first — otherwise re-running parse_document would INSERT a second,
+    duplicate set of regions/nodes alongside the first. No Qdrant cleanup
+    is needed: a version that never reached ACTIVE is already excluded by
+    retrieval's live Postgres re-verification regardless of any stray
+    Qdrant payload, and any chunk rows deleted here take their now-orphaned
+    Qdrant points' chunk_id out of that re-verification join, too.
+    """
+    document = await get_org_scoped_document(db, document_id, membership.organization_id)
+
+    version = (
+        await db.execute(
+            select(DocumentVersion).where(
+                DocumentVersion.id == version_id, DocumentVersion.document_id == document.id
+            )
+        )
+    ).scalar_one_or_none()
+    if version is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document version not found")
+
+    if version.status != DocumentLifecycleStatus.PROCESSING_FAILED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only a PROCESSING_FAILED version can be reprocessed.",
+        )
+
+    await db.execute(
+        delete(DocumentChunk).where(DocumentChunk.document_version_id == version.id)
+    )
+    await db.execute(
+        delete(DocumentStructureProfile).where(
+            DocumentStructureProfile.document_version_id == version.id
+        )
+    )
+    await db.execute(delete(DocumentNode).where(DocumentNode.document_version_id == version.id))
+    await db.execute(delete(DocumentRegion).where(DocumentRegion.document_version_id == version.id))
+
+    version.status = DocumentLifecycleStatus.UPLOADED
+    job = ProcessingJob(
+        organization_id=membership.organization_id,
+        document_version_id=version.id,
+        status=ProcessingJobStatus.QUEUED,
+    )
+    db.add(job)
+    await db.flush()
+    job.celery_task_id = enqueue_verify_upload(str(job.id))
+
+    await log_action(
+        db,
+        actor_id=membership.user_id,
+        organization_id=membership.organization_id,
+        action="document_reprocess",
+        entity_type="document_version",
+        entity_id=version.id,
+    )
+    await db.commit()
+    await db.refresh(version)
+
+    return ReprocessResult(
+        document_id=document.id,
+        document_version_id=version.id,
+        processing_job_id=job.id,
+        status=version.status,
+    )
 
 
 @router.post("/{document_id}/versions/{version_id}/rollback", response_model=RollbackResult)

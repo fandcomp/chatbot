@@ -36,6 +36,13 @@ class ArchiveResult(BaseModel):
     status: DocumentLifecycleStatus
 
 
+class ReprocessResult(BaseModel):
+    document_id: uuid.UUID
+    document_version_id: uuid.UUID
+    processing_job_id: uuid.UUID
+    status: DocumentLifecycleStatus
+
+
 class DocumentVersionPublic(BaseModel):
     id: uuid.UUID
     version_number: int

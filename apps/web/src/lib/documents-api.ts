@@ -189,6 +189,17 @@ export type ArchiveResult = {
   status: DocumentLifecycleStatus;
 };
 
+// Restarts the whole pipeline from scratch for a PROCESSING_FAILED version —
+// never resumes from whatever stage failed (see apps/api's
+// reprocess_document_version for why: earlier stages may have already
+// committed rows that must be cleared first).
+export type ReprocessResult = {
+  document_id: string;
+  document_version_id: string;
+  processing_job_id: string;
+  status: DocumentLifecycleStatus;
+};
+
 export type DocumentVersionSummary = {
   id: string;
   version_number: number;
@@ -283,6 +294,10 @@ export const documentsApi = {
   },
   archiveDocument: (documentId: string) =>
     apiClient.post<ArchiveResult>(`/documents/${documentId}/archive`),
+  reprocessVersion: (documentId: string, versionId: string) =>
+    apiClient.post<ReprocessResult>(
+      `/documents/${documentId}/versions/${versionId}/reprocess`,
+    ),
   updateVisibility: (documentId: string, visibility: DocumentVisibility) =>
     apiClient.patch<DocumentVisibilityResult>(`/documents/${documentId}/visibility`, {
       visibility,
