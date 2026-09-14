@@ -1,6 +1,13 @@
 "use client";
 
-import { BarChart3Icon, FileTextIcon, LogOutIcon, PanelLeftIcon, PlusIcon } from "lucide-react";
+import {
+  BarChart3Icon,
+  FileTextIcon,
+  LogOutIcon,
+  PanelLeftIcon,
+  PlusIcon,
+  UsersIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
@@ -23,6 +30,11 @@ export function Sidebar({ conversations, activeConversationId, onDeleteConversat
   // require_role check, app/analytics/router.py) — hiding the link for
   // VIEWER is a UX nicety only, never the enforcement (the API still 403s).
   const canSeeAnalytics = state.status === "authenticated" && state.role !== "VIEWER";
+  // "manage user" (spec §52) is OWNER/ADMIN only, matching the backend's
+  // require_role on /organizations/members' PATCH/DELETE — same UX-nicety-
+  // only caveat as canSeeAnalytics above.
+  const canManageUsers =
+    state.status === "authenticated" && (state.role === "OWNER" || state.role === "ADMIN");
 
   if (isCollapsed) {
     return (
@@ -80,6 +92,17 @@ export function Sidebar({ conversations, activeConversationId, onDeleteConversat
           >
             <BarChart3Icon className="size-4" />
             Analytics
+          </Button>
+        )}
+        {canManageUsers && (
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-2"
+            nativeButton={false}
+            render={<Link href="/users" />}
+          >
+            <UsersIcon className="size-4" />
+            Users
           </Button>
         )}
       </div>

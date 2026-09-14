@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 
 import { apiClient } from "@/lib/api-client";
 
-type OrgRole = "OWNER" | "ADMIN" | "EDITOR" | "VIEWER";
+export type OrgRole = "OWNER" | "ADMIN" | "EDITOR" | "VIEWER";
 
 type User = {
   id: string;

@@ -13,6 +13,10 @@ class MemberCreateRequest(BaseModel):
     role: OrgRole
 
 
+class MemberRoleUpdateRequest(BaseModel):
+    role: OrgRole
+
+
 class MemberPublic(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
