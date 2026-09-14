@@ -1,9 +1,10 @@
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from app.auth.dependencies import require_role
+from app.auth.router import limiter, user_or_ip_key
 from app.core.sse import sse_event
 from app.llm.exceptions import LLMProviderUnavailable
 from app.llm.gateway import LLMGateway
@@ -22,7 +23,9 @@ def _resolve_tier(body: GenerateRequest) -> ModelTier:
 
 
 @router.post("/generate", response_model=GenerateResponse)
+@limiter.limit("30/minute", key_func=user_or_ip_key)
 async def generate(
+    request: Request,
     body: GenerateRequest,
     _membership: OrganizationMember = Depends(
         require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
@@ -45,7 +48,9 @@ async def generate(
 
 
 @router.post("/generate/stream")
+@limiter.limit("30/minute", key_func=user_or_ip_key)
 async def generate_stream(
+    request: Request,
     body: GenerateRequest,
     _membership: OrganizationMember = Depends(
         require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)

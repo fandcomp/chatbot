@@ -1,10 +1,11 @@
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import require_role
+from app.auth.router import limiter, user_or_ip_key
 from app.core.config import settings
 from app.core.database import get_db
 from app.knowledge.models import KnowledgeSpace
@@ -18,7 +19,9 @@ router = APIRouter(prefix="/reranking", tags=["reranking"])
 
 
 @router.post("/evidence", response_model=EvidenceResponse)
+@limiter.limit("30/minute", key_func=user_or_ip_key)
 async def get_evidence(
+    request: Request,
     body: EvidenceRequest,
     membership: OrganizationMember = Depends(
         require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
