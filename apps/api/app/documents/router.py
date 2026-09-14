@@ -1,12 +1,13 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.audit.service import log_action
 from app.auth.dependencies import get_current_membership, require_role
+from app.auth.router import limiter, user_or_ip_key
 from app.caching.answer_cache import AnswerCacheService
 from app.chunking.models import DocumentChunk
 from app.core.database import get_db
@@ -151,7 +152,9 @@ async def list_document_versions(
 
 
 @router.post("/{document_id}/archive", response_model=ArchiveResult)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def archive_document(
+    request: Request,
     document_id: uuid.UUID,
     membership: OrganizationMember = Depends(
         require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
@@ -192,7 +195,9 @@ async def archive_document(
 
 
 @router.post("/{document_id}/versions/{version_id}/rollback", response_model=RollbackResult)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def rollback_document_version(
+    request: Request,
     document_id: uuid.UUID,
     version_id: uuid.UUID,
     membership: OrganizationMember = Depends(
@@ -272,7 +277,9 @@ async def rollback_document_version(
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def delete_document(
+    request: Request,
     document_id: uuid.UUID,
     membership: OrganizationMember = Depends(
         require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)
@@ -391,7 +398,9 @@ def _relation_public(
     response_model=DocumentRelationPublic,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def create_relation(
+    request: Request,
     document_id: uuid.UUID,
     payload: CreateRelationRequest,
     membership: OrganizationMember = Depends(
@@ -490,7 +499,9 @@ async def list_relations(
 
 
 @router.delete("/relations/{relation_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def delete_relation(
+    request: Request,
     relation_id: uuid.UUID,
     membership: OrganizationMember = Depends(
         require_role(OrgRole.OWNER, OrgRole.ADMIN, OrgRole.EDITOR)

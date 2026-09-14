@@ -6,6 +6,7 @@ Requires `docker compose up -d` to be running from the repo root.
 """
 
 import json
+import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -262,3 +263,15 @@ async def test_chat_stream_yields_tokens_and_a_final_sources_event(client_factor
     assert "data: Setiap warga negara" in text
     assert "event: sources" in text
     assert '"claims"' in text
+
+    sources_data = text.split("event: sources\ndata: ", 1)[1].split("\n\n", 1)[0]
+    sources_payload = json.loads(sources_data)
+    # Feedback (M14) needs a real persisted Message id to submit against —
+    # never the frontend's client-generated streaming placeholder id.
+    assert sources_payload["message_id"]
+    async with async_session_factory() as db:
+        from app.chat.models import Message
+
+        message = await db.get(Message, uuid.UUID(sources_payload["message_id"]))
+        assert message is not None
+        assert message.role.value == "ASSISTANT"

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 
 import { Button } from "@/components/ui/button";
+import { DocumentRelationsPanel } from "@/components/documents/document-relations-panel";
 import { ApiError } from "@/lib/api-client";
 import {
   ACTIVE_JOB_STATUSES,
@@ -45,6 +46,7 @@ export function DocumentList({ refreshToken }: Props) {
     Record<string, DocumentVersionSummary[]>
   >({});
   const [isLoadingVersions, setIsLoadingVersions] = useState(false);
+  const [expandedRelationsId, setExpandedRelationsId] = useState<string | null>(null);
   const versionTargetId = useRef<string | null>(null);
   const versionFileInput = useRef<HTMLInputElement>(null);
   const pollIntervals = useRef<Record<string, ReturnType<typeof setInterval>>>({});
@@ -149,6 +151,10 @@ export function DocumentList({ refreshToken }: Props) {
     }
   }
 
+  function handleToggleRelations(id: string) {
+    setExpandedRelationsId((current) => (current === id ? null : id));
+  }
+
   function handleUploadNewVersionClick(id: string) {
     versionTargetId.current = id;
     versionFileInput.current?.click();
@@ -244,11 +250,24 @@ export function DocumentList({ refreshToken }: Props) {
                 >
                   {expandedDocumentId === document.id ? "Hide versions" : "Versions"}
                 </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleToggleRelations(document.id)}
+                >
+                  {expandedRelationsId === document.id ? "Hide relations" : "Relations"}
+                </Button>
                 <Button variant="ghost" size="sm" onClick={() => void handleDelete(document.id)}>
                   Delete
                 </Button>
               </div>
             </div>
+            {expandedRelationsId === document.id && (
+              <DocumentRelationsPanel
+                documentId={document.id}
+                otherDocuments={documents.filter((other) => other.id !== document.id)}
+              />
+            )}
             {expandedDocumentId === document.id && (
               <div className="flex flex-col gap-1 border-t border-input pt-3">
                 {isLoadingVersions && !versionsByDocument[document.id] ? (

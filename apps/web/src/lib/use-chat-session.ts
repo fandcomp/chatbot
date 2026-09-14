@@ -14,6 +14,11 @@ export type DisplayMessage = {
   claims?: VerifiedClaim[];
   citations?: Record<string, Citation>;
   insufficientEvidence?: boolean;
+  // The backend's real, persisted Message id — distinct from `id` above
+  // (a client-generated placeholder used only to match streaming deltas to
+  // this message before the backend row exists). Feedback (M14) must
+  // target this one, never the placeholder.
+  serverMessageId?: string;
 };
 
 const GENERIC_ERROR_MESSAGE = "Something went wrong while generating a response. Please try again.";
@@ -32,6 +37,9 @@ export function useChatSession(
       id: message.id,
       role: message.role,
       content: message.content,
+      // A message loaded from history is already the real backend row —
+      // no separate client-generated placeholder id exists for it.
+      serverMessageId: message.id,
     }))
   );
   const [isStreaming, setIsStreaming] = useState(false);
@@ -78,6 +86,7 @@ export function useChatSession(
                       claims: event.data.claims,
                       citations: event.data.citations,
                       insufficientEvidence: event.data.insufficient_evidence,
+                      serverMessageId: event.data.message_id,
                     }
                   : message
               )

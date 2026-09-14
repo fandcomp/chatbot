@@ -1,6 +1,6 @@
 import type { components } from "@chatbot/schemas/src/api-types";
 import { apiClient } from "@/lib/api-client";
-import type { Citation } from "@/lib/chat-schemas";
+import type { Citation, DocumentRelationType } from "@/lib/chat-schemas";
 
 export type KnowledgeSpace = {
   id: string;
@@ -204,6 +204,28 @@ export const ROLLBACK_ELIGIBLE_STATUSES: DocumentLifecycleStatus[] = [
   "ARCHIVED",
 ];
 
+// spec §21 — admin-curated relations between two documents (e.g. "Regulation
+// B AMENDS Regulation A"), later surfaced as a citation warning (see
+// chat-schemas.ts's RelatingDocument). SUPERSEDED_BY is excluded from the
+// creatable set — the worker auto-creates it on every M13 supersede/rollback.
+export const CREATABLE_RELATION_TYPES: DocumentRelationType[] = [
+  "AMENDS",
+  "REPEALS",
+  "REPLACES",
+  "IMPLEMENTS",
+  "REFERS_TO",
+];
+
+export type DocumentRelation = {
+  id: string;
+  from_document_id: string;
+  from_document_title: string;
+  to_document_id: string;
+  to_document_title: string;
+  relation_type: DocumentRelationType;
+  created_at: string;
+};
+
 export type RetrievedSourcePreview = {
   chunk_id: string;
   structural_path_text: string | null;
@@ -257,6 +279,19 @@ export const documentsApi = {
     apiClient.post<RollbackResult>(
       `/documents/${documentId}/versions/${versionId}/rollback`,
     ),
+  listRelations: (documentId: string) =>
+    apiClient.get<DocumentRelation[]>(`/documents/${documentId}/relations`),
+  createRelation: (
+    documentId: string,
+    targetDocumentId: string,
+    relationType: DocumentRelationType,
+  ) =>
+    apiClient.post<DocumentRelation>(`/documents/${documentId}/relations`, {
+      target_document_id: targetDocumentId,
+      relation_type: relationType,
+    }),
+  deleteRelation: (relationId: string) =>
+    apiClient.delete<void>(`/documents/relations/${relationId}`),
 };
 
 export const ACTIVE_JOB_STATUSES: ProcessingJobStatus[] = ["QUEUED", "PROCESSING"];

@@ -8,11 +8,12 @@ from the first milestone — security is never deferred to a later one.
 import re
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_membership, require_role
+from app.auth.router import limiter, user_or_ip_key
 from app.core.database import get_db
 from app.core.tasks import enqueue_promote_source_entry, enqueue_scan_source
 from app.knowledge.models import KnowledgeSpace
@@ -63,7 +64,9 @@ def _is_promotable_filename(normalized_path: str) -> bool:
 
 
 @router.post("", response_model=SourceRootPublic, status_code=status.HTTP_201_CREATED)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def create_source(
+    request: Request,
     payload: CreateSourceRequest,
     membership: OrganizationMember = Depends(require_role(*_MANAGE_ROLES)),
     db: AsyncSession = Depends(get_db),
@@ -97,7 +100,9 @@ async def create_source(
 
 
 @router.post("/{source_id}/disable", response_model=SourceRootPublic)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def disable_source(
+    request: Request,
     source_id: uuid.UUID,
     membership: OrganizationMember = Depends(require_role(*_MANAGE_ROLES)),
     db: AsyncSession = Depends(get_db),
@@ -115,7 +120,9 @@ async def disable_source(
 
 
 @router.post("/{source_id}/enable", response_model=SourceRootPublic)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def enable_source(
+    request: Request,
     source_id: uuid.UUID,
     membership: OrganizationMember = Depends(require_role(*_MANAGE_ROLES)),
     db: AsyncSession = Depends(get_db),
@@ -144,7 +151,9 @@ async def list_sources(
 @router.post(
     "/{source_id}/scan", response_model=TriggerScanResponse, status_code=status.HTTP_201_CREATED
 )
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def trigger_scan(
+    request: Request,
     source_id: uuid.UUID,
     membership: OrganizationMember = Depends(require_role(*_MANAGE_ROLES)),
     db: AsyncSession = Depends(get_db),
@@ -239,7 +248,9 @@ async def list_entries(
     response_model=PromoteEntriesResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def promote_entries(
+    request: Request,
     source_id: uuid.UUID,
     payload: PromoteEntriesRequest,
     membership: OrganizationMember = Depends(require_role(*_MANAGE_ROLES)),

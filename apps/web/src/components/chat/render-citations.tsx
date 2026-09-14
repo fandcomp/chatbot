@@ -33,6 +33,7 @@ export function renderContentWithCitations(
           key={`${label}-${key++}`}
           sourceId={label}
           isKnown={Boolean(citations?.[label])}
+          hasWarning={Boolean(citations?.[label]?.superseding_relations?.length)}
           onClick={onCiteClick}
         />
       );

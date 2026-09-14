@@ -280,11 +280,16 @@ class ChatService:
 
         if not evidence_response.evidence:
             yield "token", _INSUFFICIENT_EVIDENCE_MESSAGE
-            await self._conversations.append_message(
+            message = await self._conversations.append_message(
                 conversation.id, MessageRole.ASSISTANT, _INSUFFICIENT_EVIDENCE_MESSAGE
             )
             yield "sources", json.dumps(
-                {"insufficient_evidence": True, "claims": [], "citations": {}}
+                {
+                    "insufficient_evidence": True,
+                    "claims": [],
+                    "citations": {},
+                    "message_id": str(message.id),
+                }
             )
             await self._analytics.log_query(
                 organization_id=conversation.organization_id,
@@ -326,7 +331,7 @@ class ChatService:
             evidence_response.evidence, conversation.organization_id
         )
 
-        await self._conversations.append_message(
+        message = await self._conversations.append_message(
             conversation.id,
             MessageRole.ASSISTANT,
             full_text,
@@ -341,6 +346,7 @@ class ChatService:
                     source_id: citation.model_dump(mode="json")
                     for source_id, citation in citations.items()
                 },
+                "message_id": str(message.id),
             }
         )
 

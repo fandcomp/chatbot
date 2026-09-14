@@ -40,5 +40,13 @@ def build_chunk_payload(chunk: dict, node: dict, region: dict, version: dict, do
         "sequence_number": chunk["sequence_number"],
         "chunk_id": str(chunk["id"]),
         "parent_chunk_id": str(parent_chunk_id) if isinstance(parent_chunk_id, uuid.UUID) else None,
+        # ADR-002/§48 mandates this field in the payload, but no code path
+        # reads it back: it's 1:1 redundant with document_version_id (both
+        # identify the exact same DocumentVersion row, whose version_number
+        # never changes), and ADR-001 already established that Postgres —
+        # not any Qdrant payload field — is re-verified live for staleness.
+        # A genuinely different axis (e.g. a reindex/embedding-model
+        # generation counter distinct from document content version) would
+        # need its own ADR before being wired up; not invented here.
         "index_version": version["version_number"],
     }

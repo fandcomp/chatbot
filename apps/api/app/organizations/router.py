@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import log_action
 from app.auth.dependencies import get_current_membership, require_role
+from app.auth.router import limiter, user_or_ip_key
 from app.core.database import get_db
 from app.core.security import hash_password
 from app.organizations.models import OrganizationMember, OrgRole
@@ -14,7 +15,9 @@ router = APIRouter(prefix="/organizations", tags=["organizations"])
 
 
 @router.post("/members", response_model=MemberPublic, status_code=status.HTTP_201_CREATED)
+@limiter.limit("20/minute", key_func=user_or_ip_key)
 async def create_member(
+    request: Request,
     payload: MemberCreateRequest,
     membership: OrganizationMember = Depends(require_role(OrgRole.OWNER, OrgRole.ADMIN)),
     db: AsyncSession = Depends(get_db),

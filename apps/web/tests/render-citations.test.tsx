@@ -14,6 +14,7 @@ function makeCitation(sourceId: string): Citation {
     page_start: 1,
     page_end: 1,
     original_text_excerpt: "Setiap warga negara berhak atas pendidikan.",
+    superseding_relations: [],
   };
 }
 
