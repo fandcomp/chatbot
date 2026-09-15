@@ -4,6 +4,14 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import type { OrgRole } from "@/lib/auth-context";
@@ -18,6 +26,11 @@ export function MemberList() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [invitePassword, setInvitePassword] = useState("");
   const [inviteRole, setInviteRole] = useState<OrgRole>("VIEWER");
+  // Removing a member revokes their org access immediately, with no undo
+  // short of re-inviting them — a single click was one misclick away from
+  // locking a real teammate out.
+  const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
+  const [isRemoving, setIsRemoving] = useState(false);
 
   const currentUserId = state.status === "authenticated" ? state.user.id : null;
 
@@ -60,11 +73,15 @@ export function MemberList() {
 
   async function handleRemove(memberId: string) {
     setError(null);
+    setIsRemoving(true);
     try {
       await organizationsApi.removeMember(memberId);
       setMembers((current) => current.filter((m) => m.id !== memberId));
+      setConfirmRemoveId(null);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "Failed to remove member");
+    } finally {
+      setIsRemoving(false);
     }
   }
 
@@ -102,7 +119,7 @@ export function MemberList() {
                 variant="ghost"
                 size="sm"
                 disabled={member.user_id === currentUserId}
-                onClick={() => void handleRemove(member.id)}
+                onClick={() => setConfirmRemoveId(member.id)}
               >
                 Remove
               </Button>
@@ -163,6 +180,43 @@ export function MemberList() {
           Invite member
         </Button>
       </form>
+      <Dialog
+        open={confirmRemoveId !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setConfirmRemoveId(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove member?</DialogTitle>
+            <DialogDescription>
+              {(() => {
+                const target = members.find((m) => m.id === confirmRemoveId);
+                const name = target?.full_name ?? target?.email ?? "This member";
+                return `${name} will immediately lose access to this organization. They can be re-invited later.`;
+              })()}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmRemoveId(null)}
+              disabled={isRemoving}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={isRemoving}
+              onClick={() => {
+                if (confirmRemoveId) void handleRemove(confirmRemoveId);
+              }}
+            >
+              {isRemoving ? "Removing…" : "Remove"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
