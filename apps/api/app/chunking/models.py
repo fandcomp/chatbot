@@ -24,16 +24,16 @@ class DocumentChunk(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
     )
     document_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("documents.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("documents.id"), nullable=False, index=True
     )
     document_version_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("document_versions.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("document_versions.id"), nullable=False, index=True
     )
     source_node_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("document_nodes.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("document_nodes.id"), nullable=False, index=True
     )
     parent_chunk_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("document_chunks.id"), nullable=True

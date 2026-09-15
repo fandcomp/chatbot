@@ -153,10 +153,10 @@ class DocumentRegion(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
     )
     document_version_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("document_versions.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("document_versions.id"), nullable=False, index=True
     )
     region_type: Mapped[StructuralRegionType] = mapped_column(
         SAEnum(StructuralRegionType, name="structural_region_type"), nullable=False
@@ -232,10 +232,10 @@ class DocumentNode(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
     )
     document_version_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("document_versions.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("document_versions.id"), nullable=False, index=True
     )
     region_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("document_regions.id"), nullable=False

@@ -50,7 +50,7 @@ class Document(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
     )
     knowledge_space_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("knowledge_spaces.id"), nullable=False
@@ -83,10 +83,10 @@ class DocumentVersion(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
     )
     document_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("documents.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("documents.id"), nullable=False, index=True
     )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     file_hash: Mapped[str] = mapped_column(String(64), nullable=False)

@@ -80,7 +80,7 @@ class Conversation(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
     )
     chatbot_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("chatbots.id"), nullable=False
@@ -110,7 +110,7 @@ class Message(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     conversation_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False, index=True
     )
     role: Mapped[MessageRole] = mapped_column(SAEnum(MessageRole, name="message_role"), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -135,14 +135,14 @@ class MessageSource(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     message_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("messages.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("messages.id"), nullable=False, index=True
     )
     source_label: Mapped[str] = mapped_column(String(16), nullable=False)
     chunk_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("document_chunks.id"), nullable=False
     )
     document_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("documents.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("documents.id"), nullable=False, index=True
     )
     structural_path_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     # None for a DOCX-derived source — no stable page number exists there at
