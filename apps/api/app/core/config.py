@@ -1,6 +1,16 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Gap audit 2026-09-15: nothing previously enforced JWT_SECRET_KEY's
+# strength — an operator who left .env.example's placeholder unchanged, or
+# used any other short/low-entropy value, would boot a working app that
+# signs valid session cookies with a brute-forceable key (full auth
+# bypass/impersonation, including OWNER). 32 chars is a practical floor for
+# an HS256 signing key; the recommended `secrets.token_urlsafe(48)` from
+# .env.example's own comment produces ~64.
+_MIN_JWT_SECRET_LENGTH = 32
 
 REPO_ROOT_ENV_FILE = Path(__file__).resolve().parents[4] / ".env"
 
@@ -120,6 +130,17 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 720
     SESSION_COOKIE_NAME: str = "session"
+
+    @field_validator("JWT_SECRET_KEY")
+    @classmethod
+    def _reject_weak_jwt_secret(cls, value: str) -> str:
+        if len(value) < _MIN_JWT_SECRET_LENGTH:
+            raise ValueError(
+                f"JWT_SECRET_KEY must be at least {_MIN_JWT_SECRET_LENGTH} characters "
+                "(this also rejects .env.example's own placeholder value) — generate a "
+                "real one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+            )
+        return value
 
     @property
     def cors_origins_list(self) -> list[str]:
