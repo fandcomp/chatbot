@@ -30,6 +30,19 @@ def _significant_tokens(text: str) -> set[str]:
     return {token.lower() for token in _WORD_RE.findall(text) if len(token) >= _MIN_TOKEN_LENGTH}
 
 
+def any_unsupported(verified_claims: list[VerifiedClaim]) -> bool:
+    """ADR-022: the non-streaming answer paths (chat_service.answer,
+    POST /verification/answer) cannot reliably redact a single unsupported
+    claim's text out of `summary`/`sections` — unlike the streaming path's
+    inline citation markers, those fields are independently LLM-generated
+    with no guaranteed character span for a given `Claim.text`. If any
+    claim comes back UNSUPPORTED, the caller must reject the WHOLE answer
+    (fail closed) rather than attempt a substring redaction that could
+    silently no-op on a paraphrase mismatch.
+    """
+    return any(claim.status == ClaimStatus.UNSUPPORTED for claim in verified_claims)
+
+
 class ClaimVerificationService:
     def verify(self, claims: list[Claim], evidence: list[Evidence]) -> list[VerifiedClaim]:
         evidence_by_id = {item.evidence_id: item for item in evidence}

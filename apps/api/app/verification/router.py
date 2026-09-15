@@ -20,7 +20,7 @@ from app.reranking.service import RerankingService
 from app.retrieval.exceptions import RetrievalTimeout
 from app.retrieval.service import RetrievalService
 from app.verification.schemas import AnswerRequest, AnswerResponse
-from app.verification.service import ClaimVerificationService
+from app.verification.service import ClaimVerificationService, any_unsupported
 
 router = APIRouter(prefix="/verification", tags=["verification"])
 
@@ -107,10 +107,19 @@ async def answer(
     verified_claims = verification_service.verify(
         structured_answer.claims, evidence_response.evidence
     )
+    # ADR-022: an UNSUPPORTED claim means the LLM drifted from its
+    # evidence — fail the whole answer closed rather than let unverified
+    # text through (see any_unsupported's docstring for why this JSON
+    # path can't do the streaming path's surgical per-claim redaction).
+    rejected_for_unsupported_claim = any_unsupported(verified_claims)
 
     citation_service = AdaptiveCitationService(db)
-    citations = await citation_service.build_citations(
-        evidence_response.evidence, membership.organization_id
+    citations = (
+        {}
+        if rejected_for_unsupported_claim
+        else await citation_service.build_citations(
+            evidence_response.evidence, membership.organization_id
+        )
     )
 
     return AnswerResponse(
@@ -118,11 +127,17 @@ async def answer(
         tier=tier,
         retrieval_mode=evidence_response.retrieval_mode,
         reranked=evidence_response.reranked,
-        insufficient_evidence=structured_answer.insufficient_evidence,
-        reason_if_insufficient=structured_answer.reason_if_insufficient,
+        insufficient_evidence=(
+            structured_answer.insufficient_evidence or rejected_for_unsupported_claim
+        ),
+        reason_if_insufficient=(
+            _INSUFFICIENT_EVIDENCE_MESSAGE
+            if rejected_for_unsupported_claim
+            else structured_answer.reason_if_insufficient
+        ),
         answer_type=structured_answer.answer_type,
-        summary=structured_answer.summary,
-        sections=structured_answer.sections,
+        summary=_INSUFFICIENT_EVIDENCE_MESSAGE if rejected_for_unsupported_claim else structured_answer.summary,
+        sections=[] if rejected_for_unsupported_claim else structured_answer.sections,
         claims=verified_claims,
         citations=citations,
     )

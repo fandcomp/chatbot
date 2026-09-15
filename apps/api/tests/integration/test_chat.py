@@ -10,6 +10,7 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from app.chat.chat_service import _INSUFFICIENT_EVIDENCE_MESSAGE
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.parsing.models import DocumentNodeType
@@ -260,7 +261,16 @@ async def test_chat_stream_yields_tokens_and_a_final_sources_event(client_factor
     # Assert
     assert response.status_code == 200
     text = body.decode()
-    assert "data: Setiap warga negara" in text
+    # ADR-022: stream_answer buffers the full LLM response, verifies it,
+    # then re-chunks the (possibly redacted) text word-by-word to
+    # reconstruct a "typing" effect — no longer a passthrough of the raw
+    # LLM chunk boundaries, so assert on the reconstructed full text
+    # rather than one specific chunk.
+    token_section = text.split("event: sources", 1)[0]
+    reconstructed = "".join(
+        block[len("data: ") :] for block in token_section.split("\n\n") if block.startswith("data: ")
+    )
+    assert reconstructed == "Setiap warga negara berhak atas pendidikan. [S1]"
     assert "event: sources" in text
     assert '"claims"' in text
 
@@ -275,3 +285,71 @@ async def test_chat_stream_yields_tokens_and_a_final_sources_event(client_factor
         message = await db.get(Message, uuid.UUID(sources_payload["message_id"]))
         assert message is not None
         assert message.role.value == "ASSISTANT"
+
+
+async def test_chat_stream_redacts_an_unsupported_fabricated_claim(client_factory) -> None:
+    # ADR-022 regression: a claim that fabricates "Pasal" terminology for a
+    # source that only has a numbered section (addendum §34) must never
+    # reach the user — this is the streaming-path equivalent of
+    # test_verification_answer.py's non-streaming UNSUPPORTED test, proving
+    # the fix works on the ONLY path apps/web actually calls.
+    client, ks_id = await _register(client_factory)
+    async with async_session_factory() as db:
+        org_id = await resolve_organization_id(db, ks_id)
+        document_id, version_id, region_id = await seed_active_document(db, org_id, ks_id)
+        await seed_node_and_chunk(
+            db,
+            org_id,
+            document_id,
+            version_id,
+            region_id,
+            node_type=DocumentNodeType.NUMBERED_SECTION,
+            sequence_number=0,
+            original_text="11. Urut-urutan Kegiatan wajib dilaksanakan.",
+            structural_path_json=[{"type": "NUMBERED_SECTION", "label": "11", "title": None}],
+            structural_path_text="BAB III > 11 Urut-urutan Kegiatan",
+            number_raw="11.",
+            number_normalized="11",
+        )
+        await db.commit()
+
+    fabricated_text = "Berdasarkan Pasal 11, kegiatan tersebut wajib dilaksanakan. [S1]"
+
+    async def _fake_stream(*, messages, model, stream=False, **kwargs):
+        async def gen():
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=fabricated_text))])
+
+        return gen()
+
+    with patch("app.llm.gateway.AsyncInferenceClient") as mock_client_cls:
+        mock_client_cls.return_value.chat_completion = AsyncMock(side_effect=_fake_stream)
+        async with client.stream("POST", "/chat/stream", json={"query": "angka 11"}) as response:
+            body = b""
+            async for chunk in response.aiter_bytes():
+                body += chunk
+
+    assert response.status_code == 200
+    text = body.decode()
+    token_section = text.split("event: sources", 1)[0]
+    reconstructed = "".join(
+        block[len("data: ") :] for block in token_section.split("\n\n") if block.startswith("data: ")
+    )
+    # The fabricated sentence must be gone entirely — not truncated, not
+    # partially redacted, and the answer as a whole must present as
+    # insufficient evidence rather than a fabricated one masquerading as
+    # a real (if incomplete) answer.
+    assert "Pasal 11" not in reconstructed
+    assert reconstructed == _INSUFFICIENT_EVIDENCE_MESSAGE
+
+    sources_data = text.split("event: sources\ndata: ", 1)[1].split("\n\n", 1)[0]
+    sources_payload = json.loads(sources_data)
+    assert sources_payload["insufficient_evidence"] is True
+    assert sources_payload["citations"] == {}
+    assert sources_payload["claims"][0]["status"] == "UNSUPPORTED"
+
+    async with async_session_factory() as db:
+        from app.chat.models import Message
+
+        message = await db.get(Message, uuid.UUID(sources_payload["message_id"]))
+        assert message is not None
+        assert "Pasal 11" not in message.content

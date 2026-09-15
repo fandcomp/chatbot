@@ -171,6 +171,13 @@ async def test_answer_fabricating_pasal_for_numbered_section_is_flagged_unsuppor
     body = response.json()
     assert body["claims"][0]["status"] == "UNSUPPORTED"
     assert "addendum" in body["claims"][0]["invalid_reason"].lower()
+    # ADR-022: a computed UNSUPPORTED status must actually be enforced —
+    # the fabricated "Pasal 11" sentence must never reach the user in
+    # `summary`, and the whole answer degrades to insufficient-evidence
+    # rather than presenting a partially-fabricated response as genuine.
+    assert "Pasal 11" not in body["summary"]
+    assert body["insufficient_evidence"] is True
+    assert body["citations"] == {}
 
 
 async def test_answer_citing_unknown_source_id_is_flagged_unsupported(client_factory) -> None:

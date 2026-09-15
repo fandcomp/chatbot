@@ -14,7 +14,14 @@ org-wide (not knowledge-space-scoped) turn — see that module's docstring
 for the caching scope decisions (spec §45/§47 rule 9). `stream_answer()`
 deliberately does not: caching a token stream would mean replaying a
 stored string as if it were freshly generated, which adds meaningful
-complexity for a path that is already fast due to TTFT streaming.
+complexity for a path that ADR-022 already made slower (see below).
+
+ADR-022: `stream_answer()` buffers the ENTIRE LLM response before yielding
+anything — it no longer has genuine TTFT streaming. Claim verification can
+only redact an UNSUPPORTED span before the client sees it if the client
+hasn't seen it yet at all; the previous token-as-it-arrives design made
+that structurally impossible. The "typing" effect the client still shows
+is reconstructed from the buffered, already-redacted text.
 """
 
 import asyncio
@@ -28,7 +35,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.analytics.models import QueryLogSource
 from app.analytics.service import AnalyticsService
 from app.caching.answer_cache import AnswerCacheService
-from app.chat.inline_citation_parser import parse_inline_citations
+from app.chat.inline_citation_parser import (
+    parse_inline_citations,
+    redact_unsupported_claims,
+)
 from app.chat.models import Conversation, MessageRole
 from app.chat.service import ConversationService
 from app.citations.service import AdaptiveCitationService
@@ -43,8 +53,8 @@ from app.reranking.schemas import Evidence
 from app.reranking.service import RerankingService
 from app.retrieval.exceptions import RetrievalTimeout
 from app.retrieval.service import RetrievalService
-from app.verification.schemas import AnswerResponse
-from app.verification.service import ClaimVerificationService
+from app.verification.schemas import AnswerResponse, ClaimStatus
+from app.verification.service import ClaimVerificationService, any_unsupported
 
 _INSUFFICIENT_EVIDENCE_MESSAGE = (
     "Informasi tersebut belum ditemukan pada dokumen yang tersedia dalam "
@@ -207,8 +217,22 @@ class ChatService:
         verified_claims = self._verification.verify(
             structured_answer.claims, evidence_response.evidence
         )
-        citations = await self._citations.build_citations(
-            evidence_response.evidence, conversation.organization_id
+        # ADR-022: an UNSUPPORTED claim means the LLM drifted from its
+        # evidence — fail the whole answer closed (see any_unsupported's
+        # docstring for why this path can't do the streaming path's
+        # surgical per-claim redaction instead).
+        rejected_for_unsupported_claim = any_unsupported(verified_claims)
+        insufficient_evidence = (
+            structured_answer.insufficient_evidence or rejected_for_unsupported_claim
+        )
+        summary = _INSUFFICIENT_EVIDENCE_MESSAGE if rejected_for_unsupported_claim else structured_answer.summary
+        sections = [] if rejected_for_unsupported_claim else structured_answer.sections
+        citations = (
+            {}
+            if rejected_for_unsupported_claim
+            else await self._citations.build_citations(
+                evidence_response.evidence, conversation.organization_id
+            )
         )
 
         answer_response = AnswerResponse(
@@ -216,20 +240,28 @@ class ChatService:
             tier=tier,
             retrieval_mode=evidence_response.retrieval_mode,
             reranked=evidence_response.reranked,
-            insufficient_evidence=structured_answer.insufficient_evidence,
-            reason_if_insufficient=structured_answer.reason_if_insufficient,
+            insufficient_evidence=insufficient_evidence,
+            reason_if_insufficient=(
+                _INSUFFICIENT_EVIDENCE_MESSAGE
+                if rejected_for_unsupported_claim
+                else structured_answer.reason_if_insufficient
+            ),
             answer_type=structured_answer.answer_type,
-            summary=structured_answer.summary,
-            sections=structured_answer.sections,
+            summary=summary,
+            sections=sections,
             claims=verified_claims,
             citations=citations,
         )
         message = await self._conversations.append_message(
             conversation.id,
             MessageRole.ASSISTANT,
-            structured_answer.summary,
+            summary,
             structured_answer=structured_answer.model_dump(mode="json"),
-            sources=_evidence_to_sources(evidence_response.evidence),
+            sources=(
+                None
+                if rejected_for_unsupported_claim
+                else _evidence_to_sources(evidence_response.evidence)
+            ),
         )
         await self._analytics.log_query(
             organization_id=conversation.organization_id,
@@ -240,7 +272,7 @@ class ChatService:
             retrieval_mode=evidence_response.retrieval_mode,
             reranked=evidence_response.reranked,
             tier=tier,
-            insufficient_evidence=structured_answer.insufficient_evidence,
+            insufficient_evidence=insufficient_evidence,
             retrieved_source_count=len(evidence_response.evidence),
             citation_count=len(citations),
             retrieval_latency_ms=retrieval_latency_ms,
@@ -330,25 +362,55 @@ class ChatService:
         full_text = ""
         async for token in self._llm_gateway.stream(messages=messages, model=model):
             full_text += token
-            yield "token", token
         llm_latency_ms = int((time.perf_counter() - llm_started) * 1000)
 
         claims = parse_inline_citations(full_text)
         verified_claims = self._verification.verify(claims, evidence_response.evidence)
-        citations = await self._citations.build_citations(
-            evidence_response.evidence, conversation.organization_id
+        redacted_text = redact_unsupported_claims(full_text, verified_claims)
+
+        # ADR-022: every claim in this answer was unsupported and redacted
+        # — a wall of placeholders is not a real answer, so this degrades
+        # to the same insufficient-evidence shape already used for
+        # zero-evidence queries above, rather than showing a mostly-blank
+        # response as if it were a genuine one. Checked by claim status,
+        # not `redacted_text`'s emptiness — a redacted claim is replaced
+        # with a non-empty placeholder, so the string is never actually
+        # empty even when every single claim was UNSUPPORTED.
+        insufficient_evidence = bool(verified_claims) and all(
+            claim.status == ClaimStatus.UNSUPPORTED for claim in verified_claims
+        )
+        display_text = _INSUFFICIENT_EVIDENCE_MESSAGE if insufficient_evidence else redacted_text
+
+        # Reconstructed "typing" effect over the already-verified text —
+        # no per-chunk delay (this path already pays the full-generation
+        # latency cost per ADR-022; an artificial delay would only stack
+        # on top of it for no safety benefit). Rejoining every yielded
+        # chunk with " " must reproduce `display_text` exactly (the
+        # persisted message content), so only interior words get a
+        # trailing space — `" ".join(display_text.split(" "))` always
+        # equals `display_text`; appending " " to every word would not.
+        words = display_text.split(" ")
+        for index, word in enumerate(words):
+            yield "token", word if index == len(words) - 1 else word + " "
+
+        citations = (
+            {}
+            if insufficient_evidence
+            else await self._citations.build_citations(
+                evidence_response.evidence, conversation.organization_id
+            )
         )
 
         message = await self._conversations.append_message(
             conversation.id,
             MessageRole.ASSISTANT,
-            full_text,
-            sources=_evidence_to_sources(evidence_response.evidence),
+            display_text,
+            sources=None if insufficient_evidence else _evidence_to_sources(evidence_response.evidence),
         )
 
         yield "sources", json.dumps(
             {
-                "insufficient_evidence": False,
+                "insufficient_evidence": insufficient_evidence,
                 "claims": [claim.model_dump(mode="json") for claim in verified_claims],
                 "citations": {
                     source_id: citation.model_dump(mode="json")
