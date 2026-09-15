@@ -5,6 +5,14 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { DocumentRelationsPanel } from "@/components/documents/document-relations-panel";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
@@ -57,6 +65,12 @@ export function DocumentList({ refreshToken }: Props) {
   >({});
   const [isLoadingVersions, setIsLoadingVersions] = useState(false);
   const [expandedRelationsId, setExpandedRelationsId] = useState<string | null>(null);
+  // Delete is a permanent, cascading action (versions, chunks, Qdrant
+  // points, storage objects — see apps/api/app/documents/router.py's
+  // delete_document) and, unlike Archive/Rollback, has no undo path at all,
+  // so it's the one action here that gets a confirmation step.
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const versionTargetId = useRef<string | null>(null);
   const versionFileInput = useRef<HTMLInputElement>(null);
   const pollIntervals = useRef<Record<string, ReturnType<typeof setInterval>>>({});
@@ -114,8 +128,17 @@ export function DocumentList({ refreshToken }: Props) {
   }, [documents]);
 
   async function handleDelete(id: string) {
-    await documentsApi.deleteDocument(id);
-    setDocuments((current) => current.filter((document) => document.id !== id));
+    setError(null);
+    setIsDeleting(true);
+    try {
+      await documentsApi.deleteDocument(id);
+      setDocuments((current) => current.filter((document) => document.id !== id));
+      setConfirmDeleteId(null);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "Delete failed");
+    } finally {
+      setIsDeleting(false);
+    }
   }
 
   async function handleArchive(id: string) {
@@ -318,7 +341,11 @@ export function DocumentList({ refreshToken }: Props) {
                 >
                   {expandedRelationsId === document.id ? "Hide relations" : "Relations"}
                 </Button>
-                <Button variant="ghost" size="sm" onClick={() => void handleDelete(document.id)}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setConfirmDeleteId(document.id)}
+                >
                   Delete
                 </Button>
               </div>
@@ -360,6 +387,44 @@ export function DocumentList({ refreshToken }: Props) {
           </li>
         ))}
       </ul>
+      <Dialog
+        open={confirmDeleteId !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setConfirmDeleteId(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete document?</DialogTitle>
+            <DialogDescription>
+              {(() => {
+                const target = documents.find((document) => document.id === confirmDeleteId);
+                return target
+                  ? `"${target.title}" and all of its versions, indexed content, and citations will be permanently deleted. This cannot be undone.`
+                  : "This document and all of its versions, indexed content, and citations will be permanently deleted. This cannot be undone.";
+              })()}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmDeleteId(null)}
+              disabled={isDeleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={isDeleting}
+              onClick={() => {
+                if (confirmDeleteId) void handleDelete(confirmDeleteId);
+              }}
+            >
+              {isDeleting ? "Deleting…" : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
