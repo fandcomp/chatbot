@@ -10,6 +10,7 @@ from app.analytics.schemas import (
     DocumentMentionPublic,
     FeedbackPublic,
     FeedbackRequest,
+    KnowledgeBaseOverview,
     KnowledgeGapPublic,
     TopQuestionPublic,
 )
@@ -34,6 +35,15 @@ async def get_overview(
 ) -> AnalyticsOverview:
     service = AnalyticsService(db)
     return await service.get_overview(membership.organization_id)
+
+
+@analytics_router.get("/knowledge-base", response_model=KnowledgeBaseOverview)
+async def get_knowledge_base_overview(
+    membership: OrganizationMember = Depends(require_role(*_ANALYTICS_ROLES)),
+    db: AsyncSession = Depends(get_db),
+) -> KnowledgeBaseOverview:
+    service = AnalyticsService(db)
+    return await service.get_knowledge_base_overview(membership.organization_id)
 
 
 @analytics_router.get("/knowledge-gaps", response_model=list[KnowledgeGapPublic])

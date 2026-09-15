@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from app.analytics.models import FeedbackRating
+from app.documents.models import DocumentLifecycleStatus
 
 
 class KnowledgeGapPublic(BaseModel):
@@ -40,6 +41,25 @@ class AnalyticsOverview(BaseModel):
     cache_hit_rate: float
     thumbs_up: int
     thumbs_down: int
+
+
+class DocumentStatusCount(BaseModel):
+    status: DocumentLifecycleStatus
+    count: int
+
+
+class KnowledgeBaseOverview(BaseModel):
+    # spec §82's illustrative "Admin Overview" — total documents, total
+    # currently-indexed chunks (only those belonging to each document's
+    # ACTIVE version, not stale SUPERSEDED/ARCHIVED/FAILED leftovers), and
+    # a status breakdown covering every DocumentLifecycleStatus actually
+    # present (not forced into the example's 3 illustrative buckets —
+    # nothing in the spec maps the other 7 statuses to "Ready"/"Review
+    # Required"/"Failed", so showing the real statuses is more correct
+    # than fabricating an unspecified mapping).
+    total_documents: int
+    total_indexed_chunks: int
+    status_breakdown: list[DocumentStatusCount]
 
 
 class FeedbackRequest(BaseModel):

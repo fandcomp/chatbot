@@ -11,12 +11,14 @@ import {
   analyticsApi,
   type AnalyticsOverview,
   type DocumentMention,
+  type KnowledgeBaseOverview,
   type KnowledgeGap,
   type TopQuestion,
 } from "@/lib/analytics-api";
 
 type State = {
   overview: AnalyticsOverview;
+  knowledgeBase: KnowledgeBaseOverview;
   knowledgeGaps: KnowledgeGap[];
   topQuestions: TopQuestion[];
   topSources: DocumentMention[];
@@ -50,13 +52,14 @@ export function AnalyticsDashboard() {
 
     Promise.all([
       analyticsApi.getOverview(),
+      analyticsApi.getKnowledgeBaseOverview(),
       analyticsApi.listKnowledgeGaps(),
       analyticsApi.listTopQuestions(),
       analyticsApi.listTopSources(),
     ])
-      .then(([overview, knowledgeGaps, topQuestions, topSources]) => {
+      .then(([overview, knowledgeBase, knowledgeGaps, topQuestions, topSources]) => {
         if (!cancelled) {
-          setState({ overview, knowledgeGaps, topQuestions, topSources });
+          setState({ overview, knowledgeBase, knowledgeGaps, topQuestions, topSources });
         }
       })
       .catch((caught: unknown) => {
@@ -81,12 +84,31 @@ export function AnalyticsDashboard() {
     return <p className="text-sm text-destructive">{error ?? "Failed to load analytics"}</p>;
   }
 
-  const { overview, knowledgeGaps, topQuestions, topSources } = state;
+  const { overview, knowledgeBase, knowledgeGaps, topQuestions, topSources } = state;
   const answeredRate =
     overview.total_questions > 0 ? overview.answered / overview.total_questions : 0;
 
   return (
     <div className="flex flex-col gap-8">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <StatCard
+          label="Documents"
+          value={String(knowledgeBase.total_documents)}
+          sublabel={`${knowledgeBase.total_indexed_chunks} indexed section${knowledgeBase.total_indexed_chunks === 1 ? "" : "s"}`}
+        />
+      </div>
+
+      <RankedList
+        title="Knowledge Health"
+        items={knowledgeBase.status_breakdown.map((row) => ({
+          key: row.status,
+          label: row.status,
+          count: row.count,
+        }))}
+        emptyMessage="No documents uploaded yet."
+        countLabel="documents"
+      />
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <StatCard
           size="hero"

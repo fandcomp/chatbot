@@ -32,8 +32,22 @@ export type DocumentMention = {
   citation_count: number;
 };
 
+export type DocumentStatusCount = {
+  status: string;
+  count: number;
+};
+
+// spec §82's illustrative Admin Overview.
+export type KnowledgeBaseOverview = {
+  total_documents: number;
+  total_indexed_chunks: number;
+  status_breakdown: DocumentStatusCount[];
+};
+
 export const analyticsApi = {
   getOverview: () => apiClient.get<AnalyticsOverview>("/analytics/overview"),
+  getKnowledgeBaseOverview: () =>
+    apiClient.get<KnowledgeBaseOverview>("/analytics/knowledge-base"),
   listKnowledgeGaps: () => apiClient.get<KnowledgeGap[]>("/analytics/knowledge-gaps"),
   listTopQuestions: () => apiClient.get<TopQuestion[]>("/analytics/questions"),
   listTopSources: () => apiClient.get<DocumentMention[]>("/analytics/sources"),

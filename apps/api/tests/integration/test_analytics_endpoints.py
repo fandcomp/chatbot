@@ -248,6 +248,49 @@ async def test_owner_can_read_overview_and_knowledge_gaps(client_factory) -> Non
     assert gaps_response.json() == []
 
 
+async def test_knowledge_base_overview_counts_documents_by_latest_version_status(
+    client_factory,
+) -> None:
+    # Arrange — one ACTIVE document (with chunks, seeded via _seed_article),
+    # plus a second document whose ONLY version is PROCESSING_FAILED (no
+    # chunks — chunking never runs for a version that never got that far).
+    client, ks_id = await _register(client_factory)
+    await _seed_article(ks_id)
+
+    async with async_session_factory() as db:
+        org_id = await resolve_organization_id(db, ks_id)
+        await seed_active_document(
+            db, org_id, ks_id, title="Broken Doc", status=DocumentLifecycleStatus.PROCESSING_FAILED
+        )
+        await db.commit()
+
+    # Act
+    response = await client.get("/analytics/knowledge-base")
+
+    # Assert
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_documents"] == 2
+    # _seed_article's one document has exactly one chunk; the failed
+    # document has none — never double-counted, never counted for a
+    # non-ACTIVE version.
+    assert body["total_indexed_chunks"] == 1
+    breakdown = {row["status"]: row["count"] for row in body["status_breakdown"]}
+    assert breakdown == {"ACTIVE": 1, "PROCESSING_FAILED": 1}
+
+
+async def test_viewer_cannot_read_knowledge_base_overview(client_factory) -> None:
+    owner_client, viewer_client = client_factory(), client_factory()
+    await owner_client.post("/auth/register", json=REGISTER_PAYLOAD)
+    await _create_member(owner_client, "viewer@analytics-endpoint.io", "VIEWER")
+    await viewer_client.post(
+        "/auth/login", json={"email": "viewer@analytics-endpoint.io", "password": "supersecret123"}
+    )
+
+    response = await viewer_client.get("/analytics/knowledge-base")
+    assert response.status_code == 403
+
+
 async def test_viewer_cannot_read_overview(client_factory) -> None:
     # Arrange
     owner_client, viewer_client = client_factory(), client_factory()

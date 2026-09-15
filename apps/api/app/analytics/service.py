@@ -20,11 +20,17 @@ from app.analytics.models import (
     QueryLogSource,
     QuestionFrequency,
 )
-from app.analytics.schemas import AnalyticsOverview, DocumentMentionPublic
+from app.analytics.schemas import (
+    AnalyticsOverview,
+    DocumentMentionPublic,
+    DocumentStatusCount,
+    KnowledgeBaseOverview,
+)
 from app.chat.models import Conversation, Message, MessageSource
+from app.chunking.models import DocumentChunk
 from app.core.config import settings
 from app.core.text import normalize_query_text
-from app.documents.models import Document
+from app.documents.models import Document, DocumentLifecycleStatus, DocumentVersion
 
 _COST_PER_1K_TOKENS = {
     "FAST": settings.LLM_FAST_COST_PER_1K_TOKENS,
@@ -229,4 +235,66 @@ class AnalyticsService:
             cache_hit_rate=(cache_hits or 0) / total_questions if total_questions else 0.0,
             thumbs_up=feedback_by_rating.get(FeedbackRating.THUMBS_UP, 0),
             thumbs_down=feedback_by_rating.get(FeedbackRating.THUMBS_DOWN, 0),
+        )
+
+    async def get_knowledge_base_overview(self, organization_id: uuid.UUID) -> KnowledgeBaseOverview:
+        """spec §82's illustrative Admin Overview. Status breakdown counts
+        each document ONCE, by its latest version's status (the same
+        "latest version" concept `documents/router.py`'s DocumentPublic
+        already exposes per-document, computed here for every document in
+        the org at once via a window function instead of one query per
+        document).
+        """
+        total_documents = (
+            await self._db.execute(
+                select(func.count())
+                .select_from(Document)
+                .where(Document.organization_id == organization_id)
+            )
+        ).scalar_one()
+
+        # Only chunks belonging to a currently-ACTIVE version count as
+        # "indexed" — a SUPERSEDED/ARCHIVED/FAILED version's chunk rows
+        # still exist in Postgres (nothing deletes them until the document
+        # itself is deleted) but aren't part of the live retrievable KB.
+        total_indexed_chunks = (
+            await self._db.execute(
+                select(func.count())
+                .select_from(DocumentChunk)
+                .join(DocumentVersion, DocumentChunk.document_version_id == DocumentVersion.id)
+                .where(
+                    DocumentChunk.organization_id == organization_id,
+                    DocumentVersion.status == DocumentLifecycleStatus.ACTIVE,
+                )
+            )
+        ).scalar_one()
+
+        latest_version_numbers = (
+            select(
+                DocumentVersion.document_id,
+                func.max(DocumentVersion.version_number).label("max_version_number"),
+            )
+            .where(DocumentVersion.organization_id == organization_id)
+            .group_by(DocumentVersion.document_id)
+            .subquery()
+        )
+        status_rows = (
+            await self._db.execute(
+                select(DocumentVersion.status, func.count())
+                .join(
+                    latest_version_numbers,
+                    (DocumentVersion.document_id == latest_version_numbers.c.document_id)
+                    & (DocumentVersion.version_number == latest_version_numbers.c.max_version_number),
+                )
+                .where(DocumentVersion.organization_id == organization_id)
+                .group_by(DocumentVersion.status)
+            )
+        ).all()
+
+        return KnowledgeBaseOverview(
+            total_documents=total_documents,
+            total_indexed_chunks=total_indexed_chunks,
+            status_breakdown=[
+                DocumentStatusCount(status=row[0], count=row[1]) for row in status_rows
+            ],
         )
