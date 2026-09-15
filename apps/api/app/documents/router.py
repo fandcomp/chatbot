@@ -93,6 +93,52 @@ async def _to_document_public(db: AsyncSession, document: Document) -> DocumentP
     )
 
 
+async def _latest_versions_by_document(
+    db: AsyncSession, document_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, DocumentVersion]:
+    """Batched form of `latest_version`, one query total instead of one per
+    document — every DocumentVersion row for these documents is small enough
+    to pick the max version_number in Python rather than a per-document
+    ORDER BY ... LIMIT 1 round trip.
+    """
+    if not document_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(DocumentVersion).where(DocumentVersion.document_id.in_(document_ids))
+        )
+    ).scalars().all()
+    latest_by_document: dict[uuid.UUID, DocumentVersion] = {}
+    for version in rows:
+        current = latest_by_document.get(version.document_id)
+        if current is None or version.version_number > current.version_number:
+            latest_by_document[version.document_id] = version
+    return latest_by_document
+
+
+async def _latest_job_ids_by_version(
+    db: AsyncSession, document_version_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, uuid.UUID]:
+    """Batched form of `_latest_job_id`, one query total instead of one per
+    version."""
+    if not document_version_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(
+                ProcessingJob.document_version_id, ProcessingJob.id, ProcessingJob.created_at
+            ).where(ProcessingJob.document_version_id.in_(document_version_ids))
+        )
+    ).all()
+    latest_job_id: dict[uuid.UUID, uuid.UUID] = {}
+    latest_created_at: dict[uuid.UUID, object] = {}
+    for version_id, job_id, created_at in rows:
+        if version_id not in latest_created_at or created_at > latest_created_at[version_id]:
+            latest_created_at[version_id] = created_at
+            latest_job_id[version_id] = job_id
+    return latest_job_id
+
+
 async def get_org_scoped_document(
     db: AsyncSession, document_id: uuid.UUID, organization_id: uuid.UUID
 ) -> Document:
@@ -116,7 +162,29 @@ async def list_documents(
         select(Document).where(Document.organization_id == membership.organization_id)
     )
     documents = result.scalars().all()
-    return [await _to_document_public(db, document) for document in documents]
+
+    latest_version_by_document = await _latest_versions_by_document(
+        db, [document.id for document in documents]
+    )
+    latest_job_id_by_version = await _latest_job_ids_by_version(
+        db, [version.id for version in latest_version_by_document.values()]
+    )
+
+    return [
+        DocumentPublic(
+            id=document.id,
+            title=document.title,
+            knowledge_space_id=document.knowledge_space_id,
+            visibility=document.visibility,
+            latest_version_id=latest_version_by_document[document.id].id,
+            latest_version_status=latest_version_by_document[document.id].status,
+            latest_processing_job_id=latest_job_id_by_version.get(
+                latest_version_by_document[document.id].id
+            ),
+            created_at=document.created_at,
+        )
+        for document in documents
+    ]
 
 
 @router.get("/{document_id}", response_model=DocumentPublic)

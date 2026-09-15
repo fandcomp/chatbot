@@ -91,6 +91,39 @@ async def test_upload_creates_document_version_and_queued_job(client: AsyncClien
     assert documents[0]["latest_version_status"] == "UPLOADED"
 
 
+async def test_list_documents_pairs_each_document_with_its_own_version_and_job(
+    client: AsyncClient,
+) -> None:
+    """Regression test for list_documents' batched latest-version/latest-job
+    lookup: two separately uploaded documents must each report their own
+    processing_job_id, never the other document's, after the N+1 fix that
+    replaced two per-document queries with two IN(...) queries."""
+    # Arrange
+    space_id = await _register_and_get_space_id(client)
+    first = await client.post(
+        "/documents/upload",
+        files={"file": ("first.pdf", _PDF_BYTES, "application/pdf")},
+        data={"knowledge_space_id": space_id},
+    )
+    second = await client.post(
+        "/documents/upload",
+        files={"file": ("second.pdf", _PDF_BYTES + b"\nmore", "application/pdf")},
+        data={"knowledge_space_id": space_id},
+    )
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    # Act
+    documents = (await client.get("/documents")).json()
+
+    # Assert
+    assert len(documents) == 2
+    by_title = {document["title"]: document for document in documents}
+    assert by_title["first"]["latest_processing_job_id"] == first.json()["processing_job_id"]
+    assert by_title["second"]["latest_processing_job_id"] == second.json()["processing_job_id"]
+    assert by_title["first"]["latest_version_id"] != by_title["second"]["latest_version_id"]
+
+
 async def test_duplicate_upload_returns_409(client: AsyncClient) -> None:
     # Arrange
     space_id = await _register_and_get_space_id(client)
