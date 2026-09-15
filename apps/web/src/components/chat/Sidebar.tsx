@@ -20,7 +20,7 @@ import type { ConversationSummary } from "@/lib/chat-schemas";
 type Props = {
   conversations: ConversationSummary[];
   activeConversationId: string | undefined;
-  onDeleteConversation: (id: string) => void;
+  onDeleteConversation: (id: string) => Promise<void>;
 };
 
 export function Sidebar({ conversations, activeConversationId, onDeleteConversation }: Props) {

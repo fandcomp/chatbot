@@ -76,7 +76,7 @@ export function ChatPage({ conversationId }: Props) {
       <Sidebar
         conversations={conversations}
         activeConversationId={conversationId}
-        onDeleteConversation={(id) => void handleDeleteConversation(id)}
+        onDeleteConversation={handleDeleteConversation}
       />
       {isLoading ? (
         <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">

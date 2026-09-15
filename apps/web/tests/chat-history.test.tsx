@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -57,7 +57,7 @@ describe("ChatHistory", () => {
     expect(screen.getByText("New chat")).toBeInTheDocument();
   });
 
-  it("calls onDelete with the conversation id when its delete button is clicked", async () => {
+  it("does not call onDelete until the user confirms", async () => {
     // Arrange
     const onDelete = vi.fn();
     const user = userEvent.setup();
@@ -72,6 +72,72 @@ describe("ChatHistory", () => {
     await user.click(screen.getByRole("button", { name: /delete conversation/i }));
 
     // Assert
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(await screen.findByText(/delete conversation\?/i)).toBeInTheDocument();
+  });
+
+  it("cancelling the confirmation leaves the conversation untouched", async () => {
+    // Arrange
+    const onDelete = vi.fn();
+    const user = userEvent.setup();
+    const conversations: ConversationSummary[] = [
+      { id: "c1", title: "My chat", created_at: daysAgoAtNoon(0), updated_at: daysAgoAtNoon(0) },
+    ];
+    render(
+      <ChatHistory conversations={conversations} activeConversationId={undefined} onDelete={onDelete} />
+    );
+    await user.click(screen.getByRole("button", { name: /delete conversation/i }));
+    await screen.findByText(/delete conversation\?/i);
+
+    // Act
+    await user.click(screen.getByRole("button", { name: /cancel/i }));
+
+    // Assert
+    expect(onDelete).not.toHaveBeenCalled();
+    expect(screen.queryByText(/delete conversation\?/i)).not.toBeInTheDocument();
+    expect(screen.getByText("My chat")).toBeInTheDocument();
+  });
+
+  it("calls onDelete with the conversation id once the user confirms", async () => {
+    // Arrange
+    const onDelete = vi.fn().mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    const conversations: ConversationSummary[] = [
+      { id: "c1", title: "My chat", created_at: daysAgoAtNoon(0), updated_at: daysAgoAtNoon(0) },
+    ];
+    render(
+      <ChatHistory conversations={conversations} activeConversationId={undefined} onDelete={onDelete} />
+    );
+    await user.click(screen.getByRole("button", { name: /delete conversation/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    // Act
+    await user.click(within(dialog).getByRole("button", { name: /^delete$/i }));
+
+    // Assert
     expect(onDelete).toHaveBeenCalledWith("c1");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("surfaces an error and keeps the confirmation reusable if deletion fails", async () => {
+    // Arrange
+    const onDelete = vi.fn().mockRejectedValue(new Error("boom"));
+    const user = userEvent.setup();
+    const conversations: ConversationSummary[] = [
+      { id: "c1", title: "My chat", created_at: daysAgoAtNoon(0), updated_at: daysAgoAtNoon(0) },
+    ];
+    render(
+      <ChatHistory conversations={conversations} activeConversationId={undefined} onDelete={onDelete} />
+    );
+    await user.click(screen.getByRole("button", { name: /delete conversation/i }));
+    const dialog = await screen.findByRole("dialog");
+
+    // Act
+    await user.click(within(dialog).getByRole("button", { name: /^delete$/i }));
+
+    // Assert
+    await waitFor(() => expect(onDelete).toHaveBeenCalled());
+    expect(await screen.findByText(/failed to delete conversation/i)).toBeInTheDocument();
+    expect(screen.getByText("My chat")).toBeInTheDocument();
   });
 });
