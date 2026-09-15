@@ -6,6 +6,8 @@ no similarly clear, narrow trigger for previous/next sibling expansion, so
 that is intentionally not implemented here.
 """
 
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,11 +19,33 @@ from app.retrieval.schemas import RetrievedChunk
 _EXPANSION_TOKEN_THRESHOLD = 40
 
 
-async def maybe_expand_with_parent(db: AsyncSession, chunk: RetrievedChunk) -> str | None:
-    if chunk.parent_chunk_id is None or chunk.token_count >= _EXPANSION_TOKEN_THRESHOLD:
-        return None
+async def batch_expand_with_parents(
+    db: AsyncSession, chunks: list[RetrievedChunk]
+) -> dict[uuid.UUID, str]:
+    """Maps each expansion-eligible chunk's own chunk_id to its parent's
+    original_text, fetching every needed parent in a single query instead of
+    one query per evidence item.
+    """
+    parent_ids_by_chunk_id = {
+        chunk.chunk_id: chunk.parent_chunk_id
+        for chunk in chunks
+        if chunk.parent_chunk_id is not None and chunk.token_count < _EXPANSION_TOKEN_THRESHOLD
+    }
+    if not parent_ids_by_chunk_id:
+        return {}
 
-    parent = (
-        await db.execute(select(DocumentChunk).where(DocumentChunk.id == chunk.parent_chunk_id))
-    ).scalar_one_or_none()
-    return parent.original_text if parent is not None else None
+    distinct_parent_ids = set(parent_ids_by_chunk_id.values())
+    rows = (
+        await db.execute(
+            select(DocumentChunk.id, DocumentChunk.original_text).where(
+                DocumentChunk.id.in_(distinct_parent_ids)
+            )
+        )
+    ).all()
+    parent_text_by_parent_id = {row.id: row.original_text for row in rows}
+
+    return {
+        chunk_id: parent_text_by_parent_id[parent_id]
+        for chunk_id, parent_id in parent_ids_by_chunk_id.items()
+        if parent_id in parent_text_by_parent_id
+    }

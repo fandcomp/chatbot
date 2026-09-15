@@ -216,3 +216,69 @@ async def test_small_fragment_expands_with_parent_context(client_factory) -> Non
     assert body["evidence"][0]["original_text"] == "Ya."
     assert body["evidence"][0]["parent_context"] is not None
     assert "perizinan" in body["evidence"][0]["parent_context"]
+
+
+async def test_two_fragments_sharing_one_parent_both_get_expanded(client_factory) -> None:
+    # Arrange — two small CLAUSE fragments pointing at the *same* ARTICLE
+    # parent chunk. Exercises batch_expand_with_parents' dedup of
+    # distinct_parent_ids (a single parent fetched once, reused for both).
+    client, ks_id = await _register_and_get_space(client_factory)
+    async with async_session_factory() as db:
+        org_id = await resolve_organization_id(db, ks_id)
+        document_id, version_id, region_id = await seed_active_document(db, org_id, ks_id)
+        _parent_node_id, parent_chunk_id = await seed_node_and_chunk(
+            db,
+            org_id,
+            document_id,
+            version_id,
+            region_id,
+            node_type=DocumentNodeType.ARTICLE,
+            sequence_number=0,
+            original_text="Pasal 20\nKetentuan mengenai pelaporan.",
+            structural_path_json=[{"type": "ARTICLE", "label": "Pasal 20", "title": None}],
+            structural_path_text="Pasal 20",
+            article_number="20",
+        )
+        child_chunk_ids = []
+        for clause_number in ("1", "2"):
+            _child_node_id, child_chunk_id = await seed_node_and_chunk(
+                db,
+                org_id,
+                document_id,
+                version_id,
+                region_id,
+                node_type=DocumentNodeType.CLAUSE,
+                sequence_number=int(clause_number),
+                original_text=f"Ayat {clause_number} pelaporan tahunan {clause_number}.",
+                structural_path_json=[
+                    {"type": "ARTICLE", "label": "Pasal 20", "title": None},
+                    {"type": "CLAUSE", "label": clause_number, "title": None},
+                ],
+                structural_path_text=f"Pasal 20 > {clause_number}",
+                article_number="20",
+                clause_number=clause_number,
+            )
+            child_chunk_ids.append(child_chunk_id)
+
+        for child_chunk_id in child_chunk_ids:
+            child = (
+                await db.execute(select(DocumentChunk).where(DocumentChunk.id == child_chunk_id))
+            ).scalar_one()
+            child.parent_chunk_id = parent_chunk_id
+            child.token_count = 2
+        await db.commit()
+
+    # Act — "Pasal 20" alone (no ayat) exact-matches both clause chunks under
+    # the same article, staying single-document so confidence.needs_reranking
+    # skips the reranker and no Voyage mock is needed here.
+    response = await client.post("/reranking/evidence", json={"query": "Pasal 20"})
+
+    # Assert — "Pasal 20" alone also matches the parent ARTICLE chunk itself
+    # (no clause filter), so filter down to just the two CLAUSE fragments.
+    assert response.status_code == 200
+    body = response.json()
+    clause_evidence = [e for e in body["evidence"] if e["original_text"].startswith("Ayat")]
+    assert len(clause_evidence) == 2
+    for evidence in clause_evidence:
+        assert evidence["parent_context"] is not None
+        assert "pelaporan" in evidence["parent_context"]

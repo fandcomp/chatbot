@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.reranking.confidence import needs_reranking
-from app.reranking.expansion import maybe_expand_with_parent
+from app.reranking.expansion import batch_expand_with_parents
 from app.reranking.reranker_gateway import RerankerGateway
 from app.reranking.schemas import Evidence, EvidenceResponse
 from app.retrieval.schemas import RetrievalResponse, RetrievedChunk
@@ -51,8 +51,11 @@ class RerankingService:
             chunks = chunks[: settings.RERANK_TOP_K]
             relevance_scores = [chunk.score for chunk in chunks]
 
+        parent_context_by_chunk_id = await batch_expand_with_parents(self._db, chunks)
         evidence_list = [
-            await self._to_evidence(position, chunk, relevance_score)
+            self._to_evidence(
+                position, chunk, relevance_score, parent_context_by_chunk_id.get(chunk.chunk_id)
+            )
             for position, (chunk, relevance_score) in enumerate(
                 zip(chunks, relevance_scores, strict=True), start=1
             )
@@ -65,10 +68,13 @@ class RerankingService:
             evidence=evidence_list,
         )
 
-    async def _to_evidence(
-        self, position: int, chunk: RetrievedChunk, relevance_score: float | None
+    def _to_evidence(
+        self,
+        position: int,
+        chunk: RetrievedChunk,
+        relevance_score: float | None,
+        parent_context: str | None,
     ) -> Evidence:
-        parent_context = await maybe_expand_with_parent(self._db, chunk)
         return Evidence(
             evidence_id=f"S{position}",
             chunk_id=chunk.chunk_id,
