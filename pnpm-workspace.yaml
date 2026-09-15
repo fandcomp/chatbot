@@ -6,3 +6,13 @@ packages:
 allowBuilds:
   sharp: false
   unrs-resolver: false
+
+# Gap audit 2026-09-15: @redocly/openapi-core (a transitive dependency of
+# packages/schemas' openapi-typescript dev tool) pins js-yaml to an exact
+# 4.3.1 with no semver range, so a plain `pnpm update` can never move it —
+# GHSA-2883-xcg3-v3hh (CPU-exhaustion via empty YAML merge keys). Dev-only,
+# never fed untrusted YAML in this codebase's actual usage, but the fix is
+# free and safe (patch-only bump), so applied anyway rather than left as an
+# accepted risk.
+overrides:
+  js-yaml@<4.3.2: ">=4.3.2"
