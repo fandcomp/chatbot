@@ -30,3 +30,13 @@ def test_accepts_a_sufficiently_long_secret() -> None:
     strong_secret = "a" * 32
     settings = Settings(**_OTHER_REQUIRED_FIELDS, JWT_SECRET_KEY=strong_secret)
     assert settings.JWT_SECRET_KEY == strong_secret
+
+
+def test_db_pool_settings_default_to_sqlalchemys_own_library_defaults() -> None:
+    # Gap audit 2026-09-15: these must stay a no-op on today's deployment —
+    # create_async_engine used to get these from SQLAlchemy's own unstated
+    # defaults, now they're explicit.
+    settings = Settings(**_OTHER_REQUIRED_FIELDS, JWT_SECRET_KEY="a" * 32)
+    assert settings.DB_POOL_SIZE == 5
+    assert settings.DB_MAX_OVERFLOW == 10
+    assert settings.DB_POOL_TIMEOUT_SECONDS == 30

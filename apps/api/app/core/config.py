@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     POSTGRES_USER: str = "chatbot"
     POSTGRES_PASSWORD: str = "chatbot"
     POSTGRES_DB: str = "chatbot"
+    # Gap audit 2026-09-15 (performance/latency pass): create_async_engine
+    # was called with no pool sizing at all, silently relying on
+    # SQLAlchemy's library defaults (pool_size=5, max_overflow=10,
+    # pool_timeout=30) — correct by luck, not by intent, and with no way to
+    # tune it per-deployment without editing code. Made explicit and
+    # configurable; values below match those same defaults so this change
+    # is a no-op on today's deployment.
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT_SECONDS: int = 30
 
     # REDIS
     REDIS_URL: str
