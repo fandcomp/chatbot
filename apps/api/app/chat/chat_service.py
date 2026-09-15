@@ -25,6 +25,7 @@ is reconstructed from the buffered, already-redacted text.
 """
 
 import asyncio
+import contextlib
 import json
 import time
 import uuid
@@ -208,10 +209,36 @@ class ChatService:
         )
         tier = choose_model_tier(query, distinct_document_count)
 
+        # Gap audit 2026-09-15 (performance pass, finding #6): citation
+        # building only ever depends on evidence_response.evidence +
+        # organization_id — both already known here — never on the LLM's
+        # answer, so it doesn't need to wait for generate_answer to finish.
+        # Started concurrently with it instead of sequentially after it.
+        # Safe against the two using the same AsyncSession because
+        # generate_answer makes no DB calls at all (LLM-gateway HTTP only);
+        # only one of the two ever touches self._db at a time. Always
+        # awaited to completion (never cancelled) on every exit path so a
+        # still-running query never outlives this request on the shared
+        # session — see the two `contextlib.suppress` sites below.
+        citations_task = asyncio.create_task(
+            self._citations.build_citations(
+                evidence_response.evidence, conversation.organization_id
+            )
+        )
+
         llm_started = time.perf_counter()
-        structured_answer, usage = await AnswerGenerationService(
-            self._llm_gateway
-        ).generate_answer(query, evidence_response.evidence, tier, conversation_context)
+        try:
+            structured_answer, usage = await AnswerGenerationService(
+                self._llm_gateway
+            ).generate_answer(query, evidence_response.evidence, tier, conversation_context)
+        except BaseException:
+            # generate_answer failing takes priority (matches the original
+            # sequential code, which never even attempted citations in this
+            # case) — just drain citations_task first so nothing is left
+            # touching self._db after this request is abandoned.
+            with contextlib.suppress(BaseException):
+                await citations_task
+            raise
         llm_latency_ms = int((time.perf_counter() - llm_started) * 1000)
 
         verified_claims = self._verification.verify(
@@ -227,13 +254,18 @@ class ChatService:
         )
         summary = _INSUFFICIENT_EVIDENCE_MESSAGE if rejected_for_unsupported_claim else structured_answer.summary
         sections = [] if rejected_for_unsupported_claim else structured_answer.sections
-        citations = (
-            {}
-            if rejected_for_unsupported_claim
-            else await self._citations.build_citations(
-                evidence_response.evidence, conversation.organization_id
-            )
-        )
+        if rejected_for_unsupported_claim:
+            # Citations were never needed for this outcome (matches the
+            # original code, which skipped building them entirely here) —
+            # still await the already-started task so it can't outlive this
+            # request, but a citations-only failure must not spuriously
+            # reject an answer that was already going to say "insufficient
+            # evidence" for an unrelated reason.
+            with contextlib.suppress(BaseException):
+                await citations_task
+            citations = {}
+        else:
+            citations = await citations_task
 
         answer_response = AnswerResponse(
             query=query,
@@ -358,10 +390,25 @@ class ChatService:
         model, _fallback_model = select_model_for_tier(tier)
         messages = build_streaming_messages(query, evidence_response.evidence, conversation_context)
 
+        # See answer()'s matching comment: citation building only depends on
+        # evidence already in hand, so it runs concurrently with generation
+        # instead of waiting for it — safe because the streaming call makes
+        # no DB calls, so only one of the two ever touches self._db.
+        citations_task = asyncio.create_task(
+            self._citations.build_citations(
+                evidence_response.evidence, conversation.organization_id
+            )
+        )
+
         llm_started = time.perf_counter()
         full_text = ""
-        async for token in self._llm_gateway.stream(messages=messages, model=model):
-            full_text += token
+        try:
+            async for token in self._llm_gateway.stream(messages=messages, model=model):
+                full_text += token
+        except BaseException:
+            with contextlib.suppress(BaseException):
+                await citations_task
+            raise
         llm_latency_ms = int((time.perf_counter() - llm_started) * 1000)
 
         claims = parse_inline_citations(full_text)
@@ -393,13 +440,15 @@ class ChatService:
         for index, word in enumerate(words):
             yield "token", word if index == len(words) - 1 else word + " "
 
-        citations = (
-            {}
-            if insufficient_evidence
-            else await self._citations.build_citations(
-                evidence_response.evidence, conversation.organization_id
-            )
-        )
+        if insufficient_evidence:
+            # Not needed for this outcome (matches the original code) — a
+            # citations-only failure here must not spuriously reject an
+            # answer that was already insufficient-evidence regardless.
+            with contextlib.suppress(BaseException):
+                await citations_task
+            citations = {}
+        else:
+            citations = await citations_task
 
         message = await self._conversations.append_message(
             conversation.id,

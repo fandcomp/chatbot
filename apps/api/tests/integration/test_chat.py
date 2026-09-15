@@ -5,12 +5,14 @@ mocked — no real Groq/HF/Voyage call.
 Requires `docker compose up -d` to be running from the repo root.
 """
 
+import asyncio
 import json
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.chat.chat_service import _INSUFFICIENT_EVIDENCE_MESSAGE
+from app.citations.service import AdaptiveCitationService
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.parsing.models import DocumentNodeType
@@ -353,3 +355,63 @@ async def test_chat_stream_redacts_an_unsupported_fabricated_claim(client_factor
         message = await db.get(Message, uuid.UUID(sources_payload["message_id"]))
         assert message is not None
         assert "Pasal 11" not in message.content
+
+
+async def test_citation_building_starts_before_llm_generation_finishes(client_factory) -> None:
+    """Gap audit 2026-09-15 (performance pass, finding #6): build_citations
+    only ever depends on evidence already in hand, so ChatService.answer()
+    starts it concurrently with the LLM call instead of waiting for the LLM
+    to finish first. Proven here by blocking the mocked LLM call until
+    citations has already started — under the old sequential code this
+    would deadlock (citations never even attempted until after the LLM
+    call returns) instead of completing.
+    """
+    # Arrange
+    client, ks_id = await _register(client_factory)
+    await _seed_article(ks_id)
+
+    citations_started = asyncio.Event()
+    real_build_citations = AdaptiveCitationService.build_citations
+
+    async def _tracking_build_citations(self, evidence, organization_id):
+        citations_started.set()
+        return await real_build_citations(self, evidence, organization_id)
+
+    async def _blocking_chat_completion(*args, **kwargs):
+        await asyncio.wait_for(citations_started.wait(), timeout=2)
+        return _completion(_STRUCTURED_ANSWER)
+
+    # Act
+    with (
+        patch.object(AdaptiveCitationService, "build_citations", _tracking_build_citations),
+        patch("app.llm.gateway.AsyncInferenceClient") as mock_client_cls,
+    ):
+        mock_client_cls.return_value.chat_completion = AsyncMock(
+            side_effect=_blocking_chat_completion
+        )
+        response = await client.post("/chat", json={"query": "Apa isi Pasal 5?"})
+
+    # Assert
+    assert response.status_code == 200
+    assert citations_started.is_set()
+    assert response.json()["answer"]["citations"]
+
+
+async def test_llm_failure_still_surfaces_as_an_error_despite_the_concurrent_citations_task(
+    client_factory,
+) -> None:
+    """The exception-priority half of the same fix: an LLM failure must
+    still fail the whole request exactly as before, even though a citations
+    task is now running concurrently with it.
+    """
+    # Arrange
+    client, ks_id = await _register(client_factory)
+    await _seed_article(ks_id)
+
+    # Act — every model (primary and fallback) fails.
+    with patch("app.llm.gateway.AsyncInferenceClient") as mock_client_cls:
+        mock_client_cls.return_value.chat_completion = AsyncMock(side_effect=RuntimeError("down"))
+        response = await client.post("/chat", json={"query": "Apa isi Pasal 5?"})
+
+    # Assert
+    assert response.status_code == 502
