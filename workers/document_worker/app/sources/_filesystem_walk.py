@@ -84,15 +84,29 @@ def paged_walk(root_path: str, subtree: str, cursor: dict | None, page_size: int
             rel_path = _normalize_rel_path(
                 f"{current_dir}/{child.name}" if current_dir else child.name
             )
-            if child.is_symlink():
-                # Reparse points/symlinks are never traversed — see module
-                # docstring. Not reported as an entry or an error: it's a
-                # deliberate skip, not a failure.
+            try:
+                if child.is_symlink():
+                    # Reparse points/symlinks are never traversed — see
+                    # module docstring. Not reported as an entry or an
+                    # error: it's a deliberate skip, not a failure.
+                    continue
+                if child.is_dir(follow_symlinks=False):
+                    pending_dirs.append(rel_path)
+                    continue
+                stat_result = child.stat(follow_symlinks=False)
+            except OSError as exc:
+                # Gap audit 2026-09-15: a network drop querying THIS one
+                # child (distinct from the directory-listing-level errors
+                # above, which abandon the whole directory) — os.scandir's
+                # cached DirEntry still lazily calls stat()/lstat() under
+                # the hood for is_symlink/is_dir/stat, any of which can
+                # raise on a real UNC path mid-enumeration. Skip just this
+                # entry and keep walking the rest of the page; the whole
+                # directory must not be abandoned for one bad child.
+                errors.append(
+                    SubtreeError(rel_path, EntryAccessStatus.NETWORK_ERROR, str(exc))
+                )
                 continue
-            if child.is_dir(follow_symlinks=False):
-                pending_dirs.append(rel_path)
-                continue
-            stat_result = child.stat(follow_symlinks=False)
             entries.append(
                 DiscoveredEntry(
                     normalized_path=rel_path,

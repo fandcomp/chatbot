@@ -221,6 +221,16 @@ async def _scan_source_async(scan_run_id_str: str) -> None:
 @celery_app.task(
     bind=True,
     name="document_worker.scan_source",
+    # Gap audit 2026-09-15: this task previously had retry_backoff/
+    # retry_kwargs but no autoretry_for, so they were dead configuration —
+    # an unguarded OSError (e.g. a real UNC connection drop mid-`stat()`,
+    # see _filesystem_walk.py's per-child guard added the same pass) would
+    # propagate straight to Celery with ZERO retries, mark the task FAILED,
+    # and never reach `_finalize_scan` — leaving `ScanRun.status` stuck at
+    # "RUNNING" forever with no periodic sweep to notice. Matches the same
+    # `(OSError, TimeoutError)` pattern already used elsewhere in
+    # app/tasks.py (e.g. `index_document`).
+    autoretry_for=(OSError, TimeoutError),
     retry_backoff=True,
     retry_kwargs={"max_retries": 5},
 )
@@ -280,6 +290,28 @@ async def _set_promotion_status(
         await session.commit()
 
 
+async def _release_lease(promotion_record_id: uuid.UUID) -> None:
+    """Gap audit 2026-09-15: `self.retry(countdown=30/60)` fires long
+    before `PROMOTION_LEASE_SECONDS` (300) naturally expires, so without
+    this the retried invocation's own `_claim_lease` sees a still-valid
+    lease (held by this same logical attempt) and silently no-ops —
+    `_promote_source_entry_async` just returns, Celery marks the retry a
+    "success", and the promotion record is permanently stranded at
+    PAUSED_CAPACITY/STABILITY_WAIT with no periodic sweep to ever pick it
+    back up (unlike a genuinely crashed worker, whose lease really does
+    expire naturally and gets reclaimed). Called right before every
+    `self.retry(...)` below so the retried attempt can reclaim
+    immediately regardless of which worker picks it up.
+    """
+    async with async_session_factory() as session:
+        await session.execute(
+            update(promotion_records)
+            .where(promotion_records.c.id == promotion_record_id)
+            .values(lease_expires_at=datetime.now(UTC))
+        )
+        await session.commit()
+
+
 async def _find_duplicate_version(organization_id: uuid.UUID, file_hash: str) -> dict | None:
     async with async_session_factory() as session:
         row = (
@@ -318,11 +350,25 @@ async def _create_document_and_version(
     mime_type: str,
     size_bytes: int,
     file_hash: str,
+    temp_path: str,
 ) -> dict:
     """Creates a brand-new Document (version 1) — LAN-M2 does not attempt
     to reconcile a promoted file against an existing document by title/
     path; that is a later-milestone incremental-sync refinement, not this
-    one's scope."""
+    one's scope.
+
+    Gap audit 2026-09-15: the object-storage write happens BEFORE the
+    transaction commits (and before promotion_records ever reads
+    COMPLETED) — mirrors apps/api/app/ingestion/router.py's own
+    `_create_version_and_job`: "Write to S3 before committing: if this
+    raises, the transaction never commits and no orphaned DB rows are
+    left pointing at a missing object." The previous ordering committed
+    first, so a crash or storage failure between commit and the S3 write
+    left a permanently-invisible phantom Document/ProcessingJob — worse,
+    promotion_records.status already read "COMPLETED", and `_claim_lease`
+    never reclaims a COMPLETED record, so there was no path to detect or
+    repair it.
+    """
     document_id = uuid.uuid4()
     version_id = uuid.uuid4()
     job_id = uuid.uuid4()
@@ -362,6 +408,11 @@ async def _create_document_and_version(
                 attempts=0,
             )
         )
+        await session.flush()
+
+        with open(temp_path, "rb") as fileobj:
+            put_object_stream(storage_key, fileobj, mime_type)
+
         await session.execute(
             update(promotion_records)
             .where(promotion_records.c.source_entry_id == source_entry_id)
@@ -419,6 +470,7 @@ async def _promote_source_entry_async(self, promotion_record_id_str: str) -> Non
         check_disk_watermark(settings.STAGING_DIR, settings.MIN_FREE_DISK_MB)
     except DiskWatermarkError as exc:
         await _set_promotion_status(promotion_record_id, "PAUSED_CAPACITY", str(exc))
+        await _release_lease(promotion_record_id)
         self.retry(exc=exc, countdown=60)
 
     adapter = _build_adapter(source_row["source_type"], source_row["root_path"])
@@ -428,6 +480,7 @@ async def _promote_source_entry_async(self, promotion_record_id_str: str) -> Non
         check_file_stable(adapter, normalized_path, settings.SCAN_STABILITY_WINDOW_SECONDS)
     except (FileUnstableError, FileNotFoundError) as exc:
         await _set_promotion_status(promotion_record_id, "STABILITY_WAIT", str(exc))
+        await _release_lease(promotion_record_id)
         self.retry(exc=exc, countdown=30)
 
     await _set_promotion_status(promotion_record_id, "STAGING")
@@ -437,6 +490,19 @@ async def _promote_source_entry_async(self, promotion_record_id_str: str) -> Non
     except FileTooLargeError as exc:
         await _set_promotion_status(promotion_record_id, "FAILED", str(exc))
         return
+    except OSError as exc:
+        # Gap audit 2026-09-15: a genuine network drop mid-transfer
+        # (WindowsUNCAdapter.open_stream() is a bare `open()` — nothing
+        # upstream classifies a read failure) — transient, not a
+        # permanent failure like FileTooLargeError above. Previously
+        # unhandled: this propagated straight out of the task with no
+        # autoretry_for configured, failing it outright and stranding the
+        # record at STAGING with no automatic re-trigger (the LAN-M2
+        # lease only self-heals a genuinely crashed worker, not a
+        # transient I/O error on a still-alive one).
+        await _set_promotion_status(promotion_record_id, "STABILITY_WAIT", str(exc))
+        await _release_lease(promotion_record_id)
+        self.retry(exc=exc, countdown=30)
 
     try:
         # Re-verify after transfer — a file that changed mid-copy must
@@ -466,12 +532,12 @@ async def _promote_source_entry_async(self, promotion_record_id_str: str) -> Non
             mime_type=mime_type,
             size_bytes=staged.size_bytes,
             file_hash=staged.sha256_hex,
+            temp_path=staged.temp_path,
         )
-        with open(staged.temp_path, "rb") as fileobj:
-            put_object_stream(created["storage_key"], fileobj, mime_type)
         verify_upload.delay(str(created["job_id"]))
     except FileUnstableError as exc:
         await _set_promotion_status(promotion_record_id, "STABILITY_WAIT", str(exc))
+        await _release_lease(promotion_record_id)
         self.retry(exc=exc, countdown=30)
     finally:
         if os.path.exists(staged.temp_path):

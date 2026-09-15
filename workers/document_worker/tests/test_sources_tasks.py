@@ -12,18 +12,29 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import insert, select, text, update
 
+from app.core.config import settings
 from app.database import (
     async_session_factory,
-    document_versions as document_versions_table,
     engine,
-    processing_jobs as processing_jobs_table,
     promotion_records,
     scan_runs,
     source_entries,
-    source_roots,
 )
-from app.core.config import settings
-from app.sources_tasks import _promote_source_entry_async, _scan_source_async
+from app.database import (
+    document_versions as document_versions_table,
+)
+from app.database import (
+    documents as documents_table,
+)
+from app.database import (
+    processing_jobs as processing_jobs_table,
+)
+from app.sources_tasks import (
+    _claim_lease,
+    _promote_source_entry_async,
+    _scan_source_async,
+    scan_source,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -472,3 +483,127 @@ async def test_stale_lease_is_reclaimed_by_a_later_attempt(seeded_org, tmp_path,
     record = await _promotion_row(record_id)
     assert record["status"] == "COMPLETED"
     assert record["attempts"] == 1
+
+
+async def test_storage_failure_leaves_no_orphaned_document_or_completed_record(
+    seeded_org, tmp_path, monkeypatch
+):
+    # Gap audit 2026-09-15 (CRITICAL): the DB transaction that creates
+    # Document/DocumentVersion/ProcessingJob and marks the promotion
+    # record COMPLETED must never commit if the object-storage write
+    # fails — otherwise a phantom document exists with no object behind
+    # it, and a COMPLETED record can never be reclaimed/retried since
+    # _claim_lease excludes COMPLETED from ever being reclaimed.
+    org_id, space_id = seeded_org["org_id"], seeded_org["space_id"]
+    content = _real_pdf_bytes(b"storage-failure")
+    (tmp_path / "a.pdf").write_bytes(content)
+    source_id = await _create_source(org_id, space_id, str(tmp_path))
+    entry_id = await _create_entry(org_id, source_id, "a.pdf", content)
+    record_id = await _create_promotion_record(org_id, entry_id)
+
+    import app.sources_tasks as sources_tasks_module
+
+    def _failing_put_object_stream(key, fileobj, content_type):
+        raise RuntimeError("simulated object storage outage")
+
+    monkeypatch.setattr(sources_tasks_module, "put_object_stream", _failing_put_object_stream)
+
+    with pytest.raises(RuntimeError, match="simulated object storage outage"):
+        await _promote_source_entry_async(_FakeTask(), str(record_id))
+
+    record = await _promotion_row(record_id)
+    assert record["status"] != "COMPLETED"
+    assert record["document_version_id"] is None
+
+    async with async_session_factory() as session:
+        orphaned_versions = (
+            await session.execute(
+                select(document_versions_table).where(
+                    document_versions_table.c.source_entry_id == entry_id
+                )
+            )
+        ).all()
+        orphaned_documents = (
+            await session.execute(
+                select(documents_table).where(documents_table.c.organization_id == org_id)
+            )
+        ).all()
+    assert orphaned_versions == []
+    assert orphaned_documents == []
+
+
+async def test_retry_releases_the_lease_so_it_can_be_reclaimed_immediately(
+    seeded_org, tmp_path, monkeypatch
+):
+    # Gap audit 2026-09-15 (HIGH): PROMOTION_LEASE_SECONDS (300s) far
+    # outlives this branch's 60s retry countdown — without an explicit
+    # release, the retried invocation's own _claim_lease would see its
+    # own still-valid lease and silently no-op forever (Celery marks that
+    # a "success", so nothing ever surfaces the stall). Prove the lease
+    # is actually released by claiming it again immediately, simulating
+    # the retried task's own attempt.
+    org_id, space_id = seeded_org["org_id"], seeded_org["space_id"]
+    content = _real_pdf_bytes(b"lease-release")
+    (tmp_path / "a.pdf").write_bytes(content)
+    source_id = await _create_source(org_id, space_id, str(tmp_path))
+    entry_id = await _create_entry(org_id, source_id, "a.pdf", content)
+    record_id = await _create_promotion_record(org_id, entry_id)
+
+    import app.sources_tasks as sources_tasks_module
+
+    def _fake_check_disk_watermark(staging_dir, min_free_mb):
+        from app.sources.promotion import DiskWatermarkError
+
+        raise DiskWatermarkError("simulated low disk")
+
+    monkeypatch.setattr(sources_tasks_module, "check_disk_watermark", _fake_check_disk_watermark)
+
+    with pytest.raises(_FakeTask._RetrySignal):
+        await _promote_source_entry_async(_FakeTask(), str(record_id))
+
+    reclaimed = await _claim_lease(record_id, settings.PROMOTION_LEASE_SECONDS)
+    assert reclaimed is not None
+
+
+async def test_network_error_during_staging_retries_instead_of_failing_outright(
+    seeded_org, tmp_path, monkeypatch
+):
+    # Gap audit 2026-09-15 (MEDIUM, part of the same class as #2 above):
+    # a genuine network drop mid-transfer previously propagated straight
+    # out of the task uncaught (only FileTooLargeError was handled here),
+    # failing it outright with no autoretry_for configured and no way to
+    # ever automatically re-trigger it.
+    org_id, space_id = seeded_org["org_id"], seeded_org["space_id"]
+    content = _real_pdf_bytes(b"staging-network-error")
+    (tmp_path / "a.pdf").write_bytes(content)
+    source_id = await _create_source(org_id, space_id, str(tmp_path))
+    entry_id = await _create_entry(org_id, source_id, "a.pdf", content)
+    record_id = await _create_promotion_record(org_id, entry_id)
+
+    import app.sources_tasks as sources_tasks_module
+
+    def _failing_stage_to_temp_file(adapter, normalized_path, staging_dir, max_size_bytes):
+        raise OSError("simulated network drop mid-transfer")
+
+    monkeypatch.setattr(sources_tasks_module, "stage_to_temp_file", _failing_stage_to_temp_file)
+
+    with pytest.raises(_FakeTask._RetrySignal):
+        await _promote_source_entry_async(_FakeTask(), str(record_id))
+
+    record = await _promotion_row(record_id)
+    assert record["status"] == "STABILITY_WAIT"
+
+    reclaimed = await _claim_lease(record_id, settings.PROMOTION_LEASE_SECONDS)
+    assert reclaimed is not None
+
+
+def test_scan_source_task_autoretries_transient_os_errors() -> None:
+    # Gap audit 2026-09-15 (HIGH): retry_backoff/retry_kwargs were
+    # previously dead configuration with no autoretry_for at all — an
+    # unguarded OSError (e.g. a real UNC connection drop) propagated
+    # straight to Celery with ZERO retries despite this config implying
+    # otherwise, failing the task and leaving ScanRun stuck at RUNNING
+    # forever. A plain attribute check regression-guards the fix without
+    # needing a full Celery retry-cycle simulation.
+    assert OSError in scan_source.autoretry_for
+    assert TimeoutError in scan_source.autoretry_for
