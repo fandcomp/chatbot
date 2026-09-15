@@ -14,6 +14,7 @@ from datetime import datetime
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -105,12 +106,22 @@ class Conversation(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        # Gap audit 2026-09-15 (performance pass, incremental conversation
+        # summarization): supersedes a plain conversation_id-only index —
+        # ConversationService's recent-window (ORDER BY created_at DESC
+        # LIMIT n) and incremental-summarization delta (created_at range
+        # between two cursors) queries both need an efficient
+        # (conversation_id, created_at) range scan, not just an equality
+        # lookup on conversation_id.
+        Index("ix_messages_conversation_id_created_at", "conversation_id", "created_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     conversation_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False, index=True
+        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False
     )
     role: Mapped[MessageRole] = mapped_column(SAEnum(MessageRole, name="message_role"), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -152,8 +163,10 @@ class MessageSource(Base):
 
 
 class ConversationSummary(Base):
-    """Rolling summary (spec §43) — one row per conversation, replaced (not
-    appended) each time it is regenerated.
+    """Rolling summary (spec §43) — one row per conversation, incrementally
+    updated (never fully regenerated from the whole transcript) each time
+    the recent-message window slides forward. See
+    ConversationService.build_conversation_context.
     """
 
     __tablename__ = "conversation_summaries"
@@ -165,6 +178,15 @@ class ConversationSummary(Base):
         UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False, unique=True
     )
     summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Gap audit 2026-09-15 (performance pass): cursor marking "summary_text
+    # already accounts for every message with created_at <= this value" —
+    # lets build_conversation_context fold in only the messages that aged
+    # out of the recent window since the last turn, instead of
+    # re-summarizing the entire older-than-window transcript from scratch
+    # every turn. NULL means nothing has been folded in yet.
+    summarized_through_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
