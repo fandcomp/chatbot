@@ -137,6 +137,102 @@ async def test_hybrid_search_fuses_dense_and_sparse_with_tenant_filter(client_fa
         await cleanup_client.close()
 
 
+async def test_dense_similarity_floor_excludes_a_dissimilar_candidate(client_factory) -> None:
+    # ADR-023: a point whose dense-vector cosine similarity to the query is
+    # near zero must never surface as evidence. The collection holds only
+    # this one point, so an ANN query with no floor would return it
+    # regardless of how dissimilar it is (nothing else to rank against) —
+    # this isolates score_threshold's actual effect, not an incidental
+    # side effect of DENSE_TOP_K/SPARSE_TOP_K limits.
+    client = client_factory()
+    await client.post(
+        "/auth/register",
+        json={
+            "organization_name": "Similarity Floor Org",
+            "email": "owner@similarity-floor.io",
+            "password": "supersecret123",
+        },
+    )
+    ks_id = (await client.get("/knowledge-spaces")).json()[0]["id"]
+
+    async with async_session_factory() as db:
+        org_id = await resolve_organization_id(db, ks_id)
+        document_id, version_id, region_id = await seed_active_document(db, org_id, ks_id)
+        _node_id, chunk_id = await seed_node_and_chunk(
+            db,
+            org_id,
+            document_id,
+            version_id,
+            region_id,
+            node_type=DocumentNodeType.PARAGRAPH,
+            sequence_number=0,
+            original_text=_TEXT,
+            structural_path_json=[{"type": "SECTION", "label": "1", "title": None}],
+            structural_path_text="1",
+        )
+        await db.commit()
+
+    dimension = settings.VOYAGE_EMBEDDING_DIMENSION
+    stored_dense_vector = [1.0] + [0.0] * (dimension - 1)
+    query_dense_vector = [0.0, 1.0] + [0.0] * (dimension - 2)  # orthogonal -> cosine similarity 0.0
+    stored_sparse_indices, stored_sparse_values = build_sparse_vector(_TEXT)
+
+    qdrant = get_qdrant_client()
+    await _ensure_collection(qdrant)
+    await qdrant.upsert(
+        collection_name=COLLECTION_NAME,
+        points=[
+            models.PointStruct(
+                id=str(chunk_id),
+                vector={
+                    DENSE_VECTOR_NAME: stored_dense_vector,
+                    SPARSE_VECTOR_NAME: models.SparseVector(
+                        indices=stored_sparse_indices, values=stored_sparse_values
+                    ),
+                },
+                payload={
+                    "organization_id": str(org_id),
+                    "knowledge_space_id": str(ks_id),
+                    "document_id": str(document_id),
+                    "document_version_id": str(version_id),
+                    "document_status": "ACTIVE",
+                    "visibility": "PUBLIC",
+                    "chunk_id": str(chunk_id),
+                },
+            )
+        ],
+    )
+    await qdrant.close()
+
+    try:
+        fake_result = AsyncMock()
+        fake_result.results = [AsyncMock(embeddings=[query_dense_vector])]
+        with patch("app.retrieval.embedding_gateway.voyageai.AsyncClient") as mock_client_cls:
+            mock_client_cls.return_value.contextualized_embed = AsyncMock(return_value=fake_result)
+            # Shares no terms with the stored chunk's sparse vector either,
+            # so the sparse arm naturally excludes it too — the dense floor
+            # is what this test is actually about, not incidental overlap.
+            response = await client.post(
+                "/retrieval/search", json={"query": "prosedur pengadaan barang dan jasa"}
+            )
+
+        assert response.status_code == 200
+        assert response.json()["chunks"] == []
+    finally:
+        cleanup_client = get_qdrant_client()
+        await cleanup_client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="document_id", match=models.MatchValue(value=str(document_id))
+                    )
+                ]
+            ),
+        )
+        await cleanup_client.close()
+
+
 async def test_hybrid_search_excludes_other_organizations_points(client_factory) -> None:
     # Arrange — a point that exists in Qdrant but belongs to a different
     # organization_id must never surface even with an identical dense vector

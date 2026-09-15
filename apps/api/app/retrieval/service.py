@@ -172,6 +172,12 @@ class RetrievalService:
                 query=dense_vector,
                 query_filter=query_filter,
                 limit=settings.DENSE_TOP_K,
+                # ADR-023: a cosine-similarity floor exists only on the dense
+                # arm — it's the one scale in this pipeline that's both
+                # universal and available before RRF fusion discards it (see
+                # the ADR for why the sparse arm and the fused score itself
+                # cannot be principled-ly floored the same way).
+                score_threshold=settings.DENSE_SIMILARITY_FLOOR,
                 with_payload=True,
             )
             sparse_task = client.query_points(

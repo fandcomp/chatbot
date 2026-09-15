@@ -59,6 +59,19 @@ class Settings(BaseSettings):
     # conditional reranker — distinct from DENSE_TOP_K/SPARSE_TOP_K (each
     # arm's own retrieval depth) and RERANK_TOP_K (M8's final evidence count).
     FUSION_TOP_K: int = 20
+    # (added, gap audit 2026-09-15 / ADR-023) — Qdrant cosine-similarity
+    # floor on the DENSE query only, applied before RRF fusion. Never
+    # applied to the sparse (IDF-weighted) arm: that score has no
+    # comparable universal scale (any sparse hit already shares at least
+    # one term with the query by construction), so a generic floor there
+    # would be arbitrary rather than principled. Deliberately conservative
+    # (only excludes clearly-dissimilar candidates, cosine similarity near
+    # zero or negative) — not benchmarked against real production query
+    # data (none available in this dev environment, same limitation
+    # LAN-M6 recorded for its own benchmarking); pending real calibration,
+    # a permissive default protects retrieval recall over tightening
+    # precision (spec §102's "correct retrieval" ranks above "security").
+    DENSE_SIMILARITY_FLOOR: float = 0.2
 
     # FILE — per-file limit, deliberately separate from any total-archive
     # size (LAN archive can reach ~4TB; this never bounds that, see
