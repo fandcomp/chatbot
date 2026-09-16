@@ -18,10 +18,10 @@ from app.ingestion.schemas import ProcessingJobPublic, UploadResponse
 from app.ingestion.validation import (
     UploadValidationError,
     mime_type_for_extension,
+    read_within_limit,
     sanitize_filename,
     validate_extension,
     validate_magic_bytes,
-    validate_size,
 )
 from app.knowledge.models import KnowledgeSpace
 from app.organizations.models import OrganizationMember, OrgRole
@@ -41,8 +41,7 @@ async def _validate_and_store_upload(
     filename = file.filename or "upload"
     try:
         extension = validate_extension(filename)
-        content = await file.read()
-        validate_size(content, settings.MAX_FILE_SIZE_MB)
+        content = await read_within_limit(file, settings.MAX_FILE_SIZE_MB)
         validate_magic_bytes(extension, content)
     except UploadValidationError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
