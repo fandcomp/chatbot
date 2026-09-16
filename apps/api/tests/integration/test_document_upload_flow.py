@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chunking.models import DocumentChunk
 from app.core.database import async_session_factory
@@ -89,6 +90,48 @@ async def test_upload_creates_document_version_and_queued_job(client: AsyncClien
     assert len(documents) == 1
     assert documents[0]["title"] == "report"
     assert documents[0]["latest_version_status"] == "UPLOADED"
+
+
+async def test_verify_upload_is_enqueued_only_after_the_job_row_is_committed(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gap audit 2026-09-16: enqueuing before the job row's own transaction
+    commits is a real race — a worker could query the row from its own
+    connection before it's visible there, crashing verify_upload with an
+    unhandled, non-retried NoResultFound and leaving the job stuck at
+    QUEUED forever. Proven by call-order tracking: db.commit() must fire
+    before enqueue_verify_upload() for every upload, not after.
+    """
+    # Arrange
+    space_id = await _register_and_get_space_id(client)
+    call_order: list[str] = []
+    original_commit = AsyncSession.commit
+
+    async def _tracking_commit(self: AsyncSession) -> None:
+        call_order.append("commit")
+        await original_commit(self)
+
+    def _tracking_enqueue(job_id: str) -> str:
+        call_order.append("enqueue")
+        return "fake-celery-task-id"
+
+    monkeypatch.setattr(AsyncSession, "commit", _tracking_commit)
+    monkeypatch.setattr(ingestion_router, "enqueue_verify_upload", _tracking_enqueue)
+
+    # Act
+    response = await client.post(
+        "/documents/upload",
+        files={"file": ("report.pdf", _PDF_BYTES, "application/pdf")},
+        data={"knowledge_space_id": space_id},
+    )
+
+    # Assert
+    assert response.status_code == 201
+    assert "enqueue" in call_order
+    first_enqueue_index = call_order.index("enqueue")
+    assert "commit" in call_order[:first_enqueue_index], (
+        f"enqueue_verify_upload fired before any commit: {call_order}"
+    )
 
 
 async def test_list_documents_pairs_each_document_with_its_own_version_and_job(

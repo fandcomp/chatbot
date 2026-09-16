@@ -10,6 +10,7 @@ import uuid
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chunking.models import DocumentChunk
 from app.core.database import async_session_factory
@@ -140,6 +141,42 @@ async def test_reprocessing_a_failed_version_clears_partial_state_and_queues_a_n
         ).scalar_one()
         assert new_job.status == ProcessingJobStatus.QUEUED
         assert new_job.celery_task_id == "fake-celery-task-id"
+
+
+async def test_verify_upload_is_enqueued_only_after_the_new_job_row_is_committed(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gap audit 2026-09-16: same enqueue-before-commit race as the upload
+    flow — reprocess() built its own new ProcessingJob row and called
+    enqueue_verify_upload() before committing that row, so a worker could
+    query it from its own connection before it existed there.
+    """
+    # Arrange
+    document_id, version_id = await _seed_failed_version_with_partial_state(client)
+    call_order: list[str] = []
+    original_commit = AsyncSession.commit
+
+    async def _tracking_commit(self: AsyncSession) -> None:
+        call_order.append("commit")
+        await original_commit(self)
+
+    def _tracking_enqueue(job_id: str) -> str:
+        call_order.append("enqueue")
+        return "fake-celery-task-id"
+
+    monkeypatch.setattr(AsyncSession, "commit", _tracking_commit)
+    monkeypatch.setattr(documents_router, "enqueue_verify_upload", _tracking_enqueue)
+
+    # Act
+    response = await client.post(f"/documents/{document_id}/versions/{version_id}/reprocess")
+
+    # Assert
+    assert response.status_code == 200
+    assert "enqueue" in call_order
+    first_enqueue_index = call_order.index("enqueue")
+    assert "commit" in call_order[:first_enqueue_index], (
+        f"enqueue_verify_upload fired before any commit: {call_order}"
+    )
 
 
 async def test_cannot_reprocess_a_version_that_has_not_failed(client: AsyncClient) -> None:

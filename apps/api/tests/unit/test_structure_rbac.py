@@ -5,10 +5,12 @@ a node's original extracted text (addendum §27's core guarantee).
 """
 
 import uuid
+from unittest.mock import patch
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session_factory
 from app.documents.models import DocumentVersion
@@ -315,6 +317,45 @@ async def test_approve_creates_a_new_processing_job_and_enqueues_chunking(
     new_job = next(job for job in jobs if job.id != original_job_id)
     assert new_job.status.value == "QUEUED"
     assert new_job.celery_task_id == "fake-celery-task-id"
+
+
+async def test_chunk_document_is_enqueued_only_after_the_new_job_row_is_committed(
+    client_factory,
+) -> None:
+    """Gap audit 2026-09-16: same enqueue-before-commit race as the upload
+    flow — approve_document_structure() built a new ProcessingJob row and
+    called enqueue_chunk_document() before committing that row, so a
+    worker could query it from its own connection before it existed there.
+    """
+    owner_client = client_factory()
+    await owner_client.post("/auth/register", json=REGISTER_PAYLOAD)
+    document_id, _node_id = await _upload_and_seed_structure(
+        owner_client, version_status="REVIEW_REQUIRED"
+    )
+
+    call_order: list[str] = []
+    original_commit = AsyncSession.commit
+
+    async def _tracking_commit(self: AsyncSession) -> None:
+        call_order.append("commit")
+        await original_commit(self)
+
+    def _tracking_enqueue(job_id: str) -> str:
+        call_order.append("enqueue")
+        return "fake-celery-task-id"
+
+    with (
+        patch.object(AsyncSession, "commit", _tracking_commit),
+        patch.object(parsing_router, "enqueue_chunk_document", _tracking_enqueue),
+    ):
+        response = await owner_client.post(f"/documents/{document_id}/approve")
+
+    assert response.status_code == 200
+    assert "enqueue" in call_order
+    first_enqueue_index = call_order.index("enqueue")
+    assert "commit" in call_order[:first_enqueue_index], (
+        f"enqueue_chunk_document fired before any commit: {call_order}"
+    )
 
 
 async def test_approve_rejects_a_document_not_pending_review(client_factory) -> None:

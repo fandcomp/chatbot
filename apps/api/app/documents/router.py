@@ -370,7 +370,6 @@ async def reprocess_document_version(
     )
     db.add(job)
     await db.flush()
-    job.celery_task_id = enqueue_verify_upload(str(job.id))
 
     await log_action(
         db,
@@ -380,6 +379,14 @@ async def reprocess_document_version(
         entity_type="document_version",
         entity_id=version.id,
     )
+    await db.commit()
+    # Gap audit 2026-09-16: enqueuing before this commit is a real race — a
+    # worker could query `job`'s row before it's visible on this connection
+    # and crash verify_upload with an unhandled, non-retried NoResultFound,
+    # leaving the job stuck at QUEUED forever. celery_task_id isn't part of
+    # any response schema (internal observability only), so persisting it
+    # via a second, separate commit here costs nothing callers depend on.
+    job.celery_task_id = enqueue_verify_upload(str(job.id))
     await db.commit()
     await db.refresh(version)
 

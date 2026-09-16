@@ -104,9 +104,26 @@ async def _create_version_and_job(
     # Write to S3 before committing: if this raises, the transaction never
     # commits and no orphaned DB rows are left pointing at a missing object.
     put_object(storage_key, content, mime_type_for_extension(extension))
-    job.celery_task_id = enqueue_verify_upload(str(job.id))
 
+    # Deliberately does NOT enqueue verify_upload here — see
+    # _enqueue_verify_upload_after_commit's docstring for why the Celery
+    # dispatch must never happen before this transaction commits.
     return version, job
+
+
+async def _enqueue_verify_upload_after_commit(db: AsyncSession, job: ProcessingJob) -> None:
+    """Gap audit 2026-09-16: enqueuing a Celery task before the transaction
+    that creates its job row commits is a real race — a worker can pick up
+    the message and query the row before it's visible on this connection,
+    crashing verify_upload with an unhandled NoResultFound (not in its
+    autoretry_for list) and leaving the job stuck at QUEUED forever with no
+    error message and no automatic recovery. Callers must `await db.commit()`
+    for the job row before calling this. celery_task_id isn't part of
+    UploadResponse (only used for internal observability), so persisting it
+    in a second, separate commit here costs nothing callers depend on.
+    """
+    job.celery_task_id = enqueue_verify_upload(str(job.id))
+    await db.commit()
 
 
 @router.post(
@@ -158,6 +175,7 @@ async def upload_document(
         new_value={"filename": sanitized_filename, "file_hash": file_hash},
     )
     await db.commit()
+    await _enqueue_verify_upload_after_commit(db, job)
 
     return UploadResponse(
         document_id=document.id,
@@ -235,6 +253,7 @@ async def upload_new_version(
         },
     )
     await db.commit()
+    await _enqueue_verify_upload_after_commit(db, job)
 
     return UploadResponse(
         document_id=document.id,
